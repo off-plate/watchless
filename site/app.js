@@ -47,6 +47,14 @@ function flash(button, label) {
   setTimeout(() => { button.textContent = original; }, 1400);
 }
 
+/* The provider does not report whether a track was written by the channel or
+   machine-made, so do not claim either when it did not say. */
+function captions(payload) {
+  const kind = payload.captionSource === 'manual' ? 'published '
+    : payload.captionSource === 'auto' ? 'auto ' : '';
+  return `${kind}captions${payload.captionLang ? ` · ${payload.captionLang}` : ''}`;
+}
+
 function slug(s) {
   return (s || 'transcript').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
 }
@@ -93,7 +101,7 @@ function render(payload) {
     payload.channel,
     `${clock(payload.duration)} long`,
     `${payload.words.toLocaleString()} words`,
-    `${payload.captionSource === 'manual' ? 'published' : 'auto'} captions · ${payload.captionLang}`,
+    captions(payload),
   ].filter(Boolean);
   el.facts.innerHTML = facts.map((f, i) => (i === 0 ? `<b>${esc(f)}</b>` : esc(f))).join(' &nbsp;·&nbsp; ');
 
@@ -200,7 +208,7 @@ function asText(withStamps) {
 function asMarkdown() {
   const head = [
     `# ${current.title}`, '',
-    `${current.channel} · ${clock(current.duration)} · ${current.captionSource === 'manual' ? 'published' : 'auto'} captions`,
+    `${current.channel} · ${clock(current.duration)} · ${captions(current)}`,
     current.url, '',
   ];
   return `${head.join('\n')}\n${asText(true)}\n`;

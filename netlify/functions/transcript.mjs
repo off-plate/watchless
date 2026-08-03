@@ -172,29 +172,78 @@ async function fromYouTube(id) {
   };
 }
 
-/** Strategy 3: Supadata. Only reached when YouTube blocked us and a key exists. */
-async function fromSupadata(id) {
-  const res = await fetch(
-    `https://api.supadata.ai/v1/youtube/transcript?videoId=${id}&text=false`,
-    { headers: { 'x-api-key': SUPADATA_KEY } }
-  );
+/** Supadata video metadata: title, channel, duration, description, caption languages.
+ *  Costs a credit, so it is only called when there is no free YouTube key. */
+async function supadataVideo(id) {
+  const res = await fetch(`https://api.supadata.ai/v1/youtube/video?id=${id}`, {
+    headers: { 'x-api-key': SUPADATA_KEY },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.message || body.error || `supadata video ${res.status}`);
+  const duration = Number(body.duration || 0);
+  return {
+    title: body.title || '',
+    channel: body.channel?.name || '',
+    duration,
+    chapters: chaptersFromDescription(body.description, duration),
+    langs: body.transcriptLanguages || [],
+    billed: 1,
+  };
+}
+
+/** The transcript itself.
+ *
+ *  `lang` matters more than it looks: left unset, Supadata returns the FIRST
+ *  AVAILABLE language, which is alphabetical, so an English video comes back in
+ *  Arabic. Always ask for something. Offsets and durations are milliseconds. */
+async function fromSupadata(id, want) {
+  const qs = new URLSearchParams({ videoId: id, text: 'false' });
+  if (want) qs.set('lang', want);
+
+  const res = await fetch(`https://api.supadata.ai/v1/youtube/transcript?${qs}`, {
+    headers: { 'x-api-key': SUPADATA_KEY },
+  });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.message || body.error || `supadata ${res.status}`);
 
-  const raw = body.content || body.transcript || [];
+  const raw = body.content;
   if (!Array.isArray(raw) || !raw.length) throw new Error('supadata returned no cues');
 
   const segments = raw.map((c) => {
-    const start = (c.offset ?? c.start ?? 0) / (c.offset > 10000 || c.duration > 1000 ? 1000 : 1);
-    const dur = (c.duration ?? 0) / (c.duration > 1000 ? 1000 : 1);
+    const start = Number(c.offset || 0) / 1000;
+    const end = start + Number(c.duration || 0) / 1000;
     return {
       start: +start.toFixed(2),
-      end: +(start + dur).toFixed(2),
+      end: +end.toFixed(2),
       text: String(c.text || '').replace(/\s+/g, ' ').trim(),
     };
   }).filter((s) => s.text);
 
-  return { segments, captionSource: 'auto', captionLang: body.lang || '', via: 'supadata' };
+  if (!segments.length) throw new Error('supadata cues were all empty');
+
+  return {
+    segments,
+    // Supadata does not say whether a track was written or machine-made, so do
+    // not claim either. The UI shows the language instead.
+    captionSource: 'provider',
+    captionLang: body.lang || want || '',
+    availableLangs: body.availableLangs || [],
+    via: 'supadata',
+    billed: 1,
+  };
+}
+
+/** Which caption language to ask for, best signal first. */
+function preferLang(metaLang, available) {
+  const pool = (available || []).map((l) => String(l).toLowerCase());
+  const base = (l) => String(l || '').split('-')[0].toLowerCase();
+  if (metaLang) {
+    const hit = pool.find((l) => base(l) === base(metaLang));
+    if (hit) return hit;
+    if (!pool.length) return base(metaLang);
+  }
+  const english = pool.find((l) => base(l) === 'en');
+  return english || pool[0] || 'en';
 }
 
 /* -------------------------------------------------------------- metadata */
@@ -225,6 +274,8 @@ async function fromDataApi(id) {
     channel: item.snippet?.channelTitle || '',
     duration,
     chapters: chaptersFromDescription(item.snippet?.description, duration),
+    language: item.snippet?.defaultAudioLanguage || item.snippet?.defaultLanguage || '',
+    billed: 0,
   };
 }
 
@@ -330,11 +381,28 @@ export default async (request) => {
 
   const tried = [];
   let core = null;
+  let meta = {};
+  let billed = 0;
 
   if (SUPADATA_KEY) {
+    // Metadata first, because it decides which caption language to ask for.
+    // The Google key is free, so it saves a credit whenever it is configured.
+    if (YT_KEY) meta = await fromDataApi(id);
+
+    if (!meta.title) {
+      try {
+        const video = await supadataVideo(id);
+        billed += video.billed;
+        meta = { ...video, ...Object.fromEntries(Object.entries(meta).filter(([, v]) => v)) };
+      } catch (err) {
+        tried.push(`supadata video: ${err.message}`);
+      }
+    }
+    if (!meta.title) meta = { ...meta, ...(await fromOembed(id)) };
+
     try {
-      core = await fromSupadata(id);
-      await spend(month);
+      core = await fromSupadata(id, preferLang(meta.language, meta.langs));
+      billed += core.billed;
     } catch (err) {
       tried.push(`supadata: ${err.message}`);
     }
@@ -349,24 +417,35 @@ export default async (request) => {
     }
   }
 
+  for (let i = 0; i < billed; i++) await spend(month);
+
   if (!core) {
+    const missing = tried.some((t) => /not found|404|unavailable/i.test(t));
+    if (missing) {
+      return json(404, {
+        error: 'That video does not exist',
+        hint: 'It may be private, deleted, or the link may have a typo in it.',
+        ...(debug ? { tried } : {}),
+      });
+    }
     return json(502, {
       error: 'Could not get a transcript for that video',
       hint: SUPADATA_KEY
-        ? 'The provider refused it. The video may have no captions at all.'
+        ? 'The video has no captions in any language, so there is nothing to read.'
         : 'No transcript provider is configured yet, and YouTube will not serve captions directly.',
       ...(debug ? { tried } : {}),
     });
   }
 
-  // Fill whatever the winning strategy could not supply.
-  let meta = {};
-  if (!core.title || !core.duration) {
-    meta = await fromDataApi(id);
+  // The free YouTube path carries its own metadata; anything still missing gets
+  // filled from the cheapest source that has it.
+  if (!core.title && !meta.title) {
+    meta = { ...meta, ...(await fromDataApi(id)) };
     if (!meta.title) meta = { ...meta, ...(await fromOembed(id)) };
   }
 
-  const duration = core.duration || meta.duration || Math.round(core.segments[core.segments.length - 1]?.end || 0);
+  const duration = core.duration || meta.duration
+    || Math.round(core.segments[core.segments.length - 1]?.end || 0);
   const payload = {
     videoId: id,
     url: `https://www.youtube.com/watch?v=${id}`,
