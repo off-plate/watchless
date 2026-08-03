@@ -11,7 +11,8 @@ const el = {
   intake: $('intake'), loading: $('loading'), loadingText: $('loadingText'),
   result: $('result'), form: $('form'), url: $('url'), go: $('go'),
   error: $('error'), status: $('status'), statusText: $('statusText'),
-  helperHelp: $('helperHelp'), recentWrap: $('recentWrap'), recent: $('recent'),
+  helperHelp: $('helperHelp'), blocked: $('blocked'), localLink: $('localLink'),
+  recentWrap: $('recentWrap'), recent: $('recent'),
   thumb: $('thumb'), title: $('title'), facts: $('facts'),
   rail: $('rail'), chapters: $('chapters'), transcript: $('transcript'),
   search: $('search'), hits: $('hits'), body: document.querySelector('.body'),
@@ -54,9 +55,13 @@ function slug(s) {
 
 /* --------------------------------------------------------- helper status */
 
+/* Chrome will not let a hosted page reach 127.0.0.1 until the user allows it, and it
+   only asks on a user gesture. So off localhost we never ping on load — the first
+   real click is what earns the prompt. */
 async function ping() {
+  setStatus('checking');
   const stop = new AbortController();
-  const timer = setTimeout(() => stop.abort(), 2500);
+  const timer = setTimeout(() => stop.abort(), 4000);
   try {
     const res = await fetch(`${BASE}/health`, { signal: stop.signal, cache: 'no-store' });
     const data = await res.json();
@@ -68,10 +73,25 @@ async function ping() {
   } finally { clearTimeout(timer); }
 }
 
+const LABELS = {
+  up: 'helper running',
+  down: LOCAL ? 'helper offline' : 'helper unreachable',
+  checking: 'checking helper',
+  idle: 'helper on 127.0.0.1',
+};
+
 function setStatus(state) {
   el.status.dataset.state = state;
-  el.statusText.textContent = state === 'up' ? 'helper running' : state === 'down' ? 'helper offline' : 'checking helper';
-  el.helperHelp.hidden = state !== 'down';
+  el.statusText.textContent = LABELS[state];
+  el.helperHelp.hidden = !(state === 'down' && LOCAL);
+  if (state !== 'down') el.blocked.hidden = true;
+}
+
+function showBlocked(url) {
+  const id = (url.match(/[?&]v=([A-Za-z0-9_-]{11})/) || url.match(/([A-Za-z0-9_-]{11})(?:\?|$)/) || [])[1];
+  el.localLink.href = `http://127.0.0.1:8787/${id ? `?v=${id}` : ''}`;
+  el.blocked.hidden = false;
+  el.helperHelp.hidden = false;
 }
 
 /* ----------------------------------------------------------- transcript */
@@ -301,7 +321,8 @@ async function load(url) {
     render(data);
   } catch {
     setStatus('down');
-    fail('The helper is not answering', 'Start it on your Mac, then try again.');
+    if (LOCAL) fail('The helper is not answering', 'Start it on your Mac, then try again.');
+    else { fail('Could not reach the helper', 'It is either not running, or Chrome blocked the connection.'); showBlocked(url); }
   } finally {
     clearInterval(ticker);
     el.go.disabled = false;
@@ -356,7 +377,11 @@ document.addEventListener('click', (e) => {
     .catch(() => flash(button, 'Blocked'));
 });
 
-el.status.addEventListener('click', () => { setStatus('checking'); ping(); });
+el.status.addEventListener('click', ping);
+$('retry').addEventListener('click', () => {
+  const value = el.url.value.trim();
+  if (value) load(value); else ping();
+});
 
 document.addEventListener('keydown', (e) => {
   if (e.key === '/' && document.activeElement !== el.search && document.activeElement !== el.url) {
@@ -367,7 +392,7 @@ document.addEventListener('keydown', (e) => {
 /* ----------------------------------------------------------------- boot */
 
 drawRecent();
-ping();
+if (LOCAL) ping(); else setStatus('idle');
 const wanted = new URLSearchParams(location.search).get('v');
 if (wanted && /^[A-Za-z0-9_-]{11}$/.test(wanted)) load(`https://www.youtube.com/watch?v=${wanted}`);
 else el.url.focus();

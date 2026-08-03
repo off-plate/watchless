@@ -85,6 +85,8 @@ main{padding:0 clamp(20px,5vw,48px) 120px;max-width:var(--shell);margin:0 auto}
 .recent button:hover{color:var(--accent)}
 .recent .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .helper-help p{max-width:52ch;color:var(--muted);margin-top:14px}
+.helper-help .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+a.ghost{text-decoration:none;display:inline-block}
 pre{
   margin:16px 0 14px;padding:14px 16px;background:var(--paper);border:1px solid var(--line);
   border-radius:3px;overflow-x:auto;

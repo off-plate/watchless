@@ -40,6 +40,16 @@
       <pre id="cmd"><code>cd ~/"Claude Helpers/Scribe" &amp;&amp; ./helper/start.sh</code></pre>
       <button class="ghost" type="button" data-copy="cmd">Copy command</button>
     </div>
+
+    <div id="blocked" class="helper-help" hidden>
+      <h2 class="rail-title">Chrome blocked the local connection</h2>
+      <p>Chrome asks permission before a hosted page may reach 127.0.0.1. Allow it when
+         the prompt appears, or open the copy the helper serves itself.</p>
+      <p class="row">
+        <a id="localLink" class="ghost" href="http://127.0.0.1:8787/">Open the local copy</a>
+        <button id="retry" class="ghost" type="button">Try again</button>
+      </p>
+    </div>
   </section>
 
   <section id="loading" class="loading" hidden>
