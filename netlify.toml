@@ -1,0 +1,21 @@
+[build]
+  publish = "site"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+# The transcript call can wait on YouTube and a provider in sequence.
+[functions."transcript"]
+  timeout = 26
+
+[[headers]]
+  for = "/assets/fonts/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"

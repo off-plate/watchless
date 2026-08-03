@@ -1,17 +1,15 @@
-/* Scribe — paste a YouTube link, read the transcript.
-   The page holds no secrets and does no fetching of its own: the local helper
-   (helper/scribe_helper.py) runs yt-dlp and hands back structured JSON. */
+/* Watchless — paste a YouTube link, read the transcript.
+   The page holds no secrets and talks to exactly one endpoint: /api/transcript,
+   a Netlify function that does the fetching and caching server-side. */
 
-const LOCAL = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
-const BASE = LOCAL ? '' : 'http://127.0.0.1:8787';
-const RECENT_KEY = 'scribe.recent';
+const ENDPOINT = '/api/transcript';
+const RECENT_KEY = 'watchless.recent';
 
 const $ = (id) => document.getElementById(id);
 const el = {
   intake: $('intake'), loading: $('loading'), loadingText: $('loadingText'),
   result: $('result'), form: $('form'), url: $('url'), go: $('go'),
-  error: $('error'), status: $('status'), statusText: $('statusText'),
-  helperHelp: $('helperHelp'), blocked: $('blocked'), localLink: $('localLink'),
+  error: $('error'),
   recentWrap: $('recentWrap'), recent: $('recent'),
   thumb: $('thumb'), title: $('title'), facts: $('facts'),
   rail: $('rail'), chapters: $('chapters'), transcript: $('transcript'),
@@ -51,48 +49,6 @@ function flash(button, label) {
 
 function slug(s) {
   return (s || 'transcript').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
-}
-
-/* --------------------------------------------------------- helper status */
-
-/* Chrome will not let a hosted page reach 127.0.0.1 until the user allows it, and it
-   only asks on a user gesture. So off localhost we never ping on load — the first
-   real click is what earns the prompt. */
-async function ping() {
-  setStatus('checking');
-  const stop = new AbortController();
-  const timer = setTimeout(() => stop.abort(), 4000);
-  try {
-    const res = await fetch(`${BASE}/health`, { signal: stop.signal, cache: 'no-store' });
-    const data = await res.json();
-    setStatus(data.ok ? 'up' : 'down');
-    return !!data.ok;
-  } catch {
-    setStatus('down');
-    return false;
-  } finally { clearTimeout(timer); }
-}
-
-const LABELS = {
-  up: 'helper running',
-  down: LOCAL ? 'helper offline' : 'helper unreachable',
-  checking: 'checking helper',
-  idle: 'helper on 127.0.0.1',
-};
-
-function setStatus(state) {
-  el.status.dataset.state = state;
-  el.statusText.textContent = LABELS[state];
-  el.helperHelp.hidden = !(state === 'down' && LOCAL);
-  if (state !== 'down') el.blocked.hidden = true;
-}
-
-function showBlocked(url) {
-  const id = (url.match(/[?&]v=([A-Za-z0-9_-]{11})/) || url.match(/([A-Za-z0-9_-]{11})(?:\?|$)/) || [])[1];
-  el.localLink.href = `http://127.0.0.1:8787/${id ? `?v=${id}` : ''}`;
-  el.blocked.hidden = false;
-  $('retry').hidden = false;
-  el.helperHelp.hidden = false;
 }
 
 /* ----------------------------------------------------------- transcript */
@@ -171,7 +127,7 @@ function render(payload) {
   watchChapters();
   remember(payload);
   show('result');
-  document.title = `${payload.title} — Scribe`;
+  document.title = `${payload.title} — Watchless`;
 }
 
 function watchChapters() {
@@ -288,7 +244,7 @@ function show(view) {
   el.loading.hidden = view !== 'loading';
   el.result.hidden = view !== 'result';
   if (view === 'intake') {
-    document.title = 'Scribe';
+    document.title = 'Watchless';
     drawRecent();
   }
 }
@@ -314,16 +270,13 @@ async function load(url) {
   show('loading');
   tick();
   try {
-    const res = await fetch(`${BASE}/api/transcript?url=${encodeURIComponent(url)}`);
+    const res = await fetch(`${ENDPOINT}?url=${encodeURIComponent(url)}`);
     const data = await res.json();
     if (!res.ok) return fail(data.error || 'That did not work', data.hint || '');
-    setStatus('up');
     history.replaceState(null, '', `?v=${data.videoId}`);
     render(data);
   } catch {
-    setStatus('down');
-    if (LOCAL) fail('The helper is not answering', 'Start it on your Mac, then try again.');
-    else { fail('Could not reach the helper', 'It is either not running, or Chrome blocked the connection.'); showBlocked(url); }
+    fail('Could not reach the server', 'Check your connection and try again.');
   } finally {
     clearInterval(ticker);
     el.go.disabled = false;
@@ -370,20 +323,6 @@ $('again').addEventListener('click', () => {
   el.url.focus();
 });
 
-document.addEventListener('click', (e) => {
-  const button = e.target.closest('button[data-copy]');
-  if (!button) return;
-  navigator.clipboard.writeText($(button.dataset.copy).innerText.trim())
-    .then(() => flash(button, 'Copied'))
-    .catch(() => flash(button, 'Blocked'));
-});
-
-el.status.addEventListener('click', ping);
-$('retry').addEventListener('click', () => {
-  const value = el.url.value.trim();
-  if (value) load(value); else ping();
-});
-
 document.addEventListener('keydown', (e) => {
   if (e.key === '/' && document.activeElement !== el.search && document.activeElement !== el.url) {
     if (!el.result.hidden) { e.preventDefault(); el.search.focus(); }
@@ -393,7 +332,6 @@ document.addEventListener('keydown', (e) => {
 /* ----------------------------------------------------------------- boot */
 
 drawRecent();
-if (LOCAL) ping(); else setStatus('idle');
 const wanted = new URLSearchParams(location.search).get('v');
 if (wanted && /^[A-Za-z0-9_-]{11}$/.test(wanted)) load(`https://www.youtube.com/watch?v=${wanted}`);
 else el.url.focus();

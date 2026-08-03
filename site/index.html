@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Scribe</title>
+<title>Watchless</title>
 <meta name="description" content="Paste a YouTube link, read the transcript.">
 <link rel="preload" href="assets/fonts/clash-600.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/gsans-400.woff2" as="font" type="font/woff2" crossorigin>
@@ -12,10 +12,7 @@
 <body>
 
 <header class="bar">
-  <a class="wordmark" href="./">Scribe</a>
-  <button id="status" class="status" type="button" data-state="checking">
-    <span class="dot"></span><span id="statusText">checking helper</span>
-  </button>
+  <a class="wordmark" href="./">Watchless</a>
 </header>
 
 <main>
@@ -34,23 +31,6 @@
       <ul id="recent" class="recent"></ul>
     </div>
 
-    <div id="helperHelp" class="helper-help" hidden>
-      <h2 class="rail-title">Start the helper</h2>
-      <p>YouTube will not release captions to a browser, so the fetching runs on your Mac.</p>
-      <pre id="cmd"><code>cd ~/"Claude Helpers/Scribe" &amp;&amp; ./helper/start.sh</code></pre>
-      <p class="row">
-        <button class="ghost" type="button" data-copy="cmd">Copy command</button>
-        <button id="retry" class="ghost" type="button" hidden>Try again</button>
-      </p>
-      <div id="blocked" hidden>
-        <p>If it is already running, Chrome is holding the connection back. It asks
-           permission before a hosted page may reach 127.0.0.1, so allow it when the
-           prompt appears, or open the copy the helper serves itself.</p>
-        <p class="row">
-          <a id="localLink" class="ghost" href="http://127.0.0.1:8787/">Open the local copy</a>
-        </p>
-      </div>
-    </div>
   </section>
 
   <section id="loading" class="loading" hidden>

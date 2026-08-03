@@ -1,60 +1,45 @@
-# Scribe
+# Watchless
 
 Paste a YouTube link, get the transcript laid out to read: chapter headings, paragraph blocks, clickable timestamps, search, and copy or download as `.txt`, `.md`, or `.srt`.
 
-Site: https://off-plate.github.io/scribe
-Local: http://127.0.0.1:8787
+Nothing runs on anyone's machine. The site is static, the fetching happens in one Netlify function, and results cache in Supabase.
 
-## Why there is a helper
+## Setup, once
 
-The site is static. YouTube will not give a transcript to a browser:
+1. **Netlify** — connect this repo. Publish directory `site`, functions `netlify/functions`. No build command.
+2. **Supabase** — open the shared project's SQL editor, paste `supabase/schema.sql`, run it.
+3. **Supadata** — sign up at supadata.ai, copy the API key. Free tier is 100 transcripts a month.
+4. **Netlify environment variables:**
 
-- `youtube.com` returns no CORS headers, so the page cannot fetch it directly.
-- The signed `timedtext` caption URLs return an empty body without a valid PO token.
-- Public CORS proxies and any datacenter-hosted function get bot-blocked.
+| Variable | Needed | What it does |
+|---|---|---|
+| `SUPADATA_API_KEY` | yes | The only working transcript source. Without it nothing loads. |
+| `SUPABASE_URL` | yes | Cache and spend counter. Without it every read costs a credit. |
+| `SUPABASE_SERVICE_KEY` | yes | Same. Service key, never the anon key, and never in the site folder. |
+| `MONTHLY_CAP` | no | New transcripts allowed per month. Defaults to 90, under the free 100. |
+| `YOUTUBE_API_KEY` | no | Free Google key, no card. Adds exact duration and real chapters. |
 
-`yt-dlp` running on your own machine still works. So the UI is hosted, the fetching is local. The helper is a single stdlib Python file, binds `127.0.0.1` only, and talks to nothing except YouTube.
+## Why a provider is required
 
-## Run it
+Measured 2026-08-03, from a home IP and from a server:
 
-```bash
-brew install yt-dlp        # once
-cd ~/"Claude Helpers/Scribe"
-./helper/start.sh
-```
+- `youtube.com` sends no CORS headers, so the browser cannot fetch captions itself.
+- The signed `timedtext` URL returns an **empty body**. YouTube wants a PO token now.
+- Public proxies come back bot-blocked or 401.
+- `yt-dlp` still works, but only by downloading YouTube's player JavaScript and solving a challenge with a JS runtime. That is not something a 26-second serverless function does.
 
-Then open either https://off-plate.github.io/scribe or http://127.0.0.1:8787 (the helper serves the same site, so both work).
+So the caption fetch has to be bought from someone running residential proxies. That is what Supadata is for, and the free tier covers ordinary personal use.
 
-To keep it running in the background permanently:
+## What it costs
 
-```bash
-./helper/install-autostart.sh      # launchd job, starts at login
-./helper/install-autostart.sh off  # remove it
-```
-
-## API
-
-| Route | Returns |
-|---|---|
-| `GET /health` | `{ok, version, ytdlp}` |
-| `GET /api/transcript?url=<link>` | full payload below (`&refresh=1` bypasses the cache) |
-
-```json
-{
-  "videoId": "...", "title": "...", "channel": "...", "duration": 1120,
-  "captionSource": "manual|auto", "captionLang": "en", "words": 3357,
-  "chapters": [{ "start": 0, "end": 44, "title": "..." }],
-  "segments": [{ "start": 0.4, "end": 3.2, "text": "..." }]
-}
-```
-
-Results cache to `~/.cache/scribe/<videoId>.json`, so a repeat read is instant.
+Nothing, until it gets busy. A video read once caches forever, so it costs one credit total no matter how many times it is opened afterwards. The function refuses to spend past `MONTHLY_CAP`, so the free tier cannot quietly become a bill. When the cap is hit, already-read videos still open instantly and the counter resets on the 1st.
 
 ## Layout
 
 ```
-docs/      the site (GitHub Pages serves this folder)
-helper/    scribe_helper.py, start.sh, install-autostart.sh
+site/                       the front end, no build step
+netlify/functions/          transcript.mjs, the only backend
+supabase/schema.sql         cache table, spend counter, atomic increment
 ```
 
-Captions come from published subtitles when the channel wrote them, auto-captions otherwise. No captions of either kind means there is nothing to show; Scribe says so rather than guessing. Audio transcription is what `/watch` is for.
+Captions come from published subtitles when the channel wrote them, auto-captions otherwise. A video with neither has nothing to show, and Watchless says so rather than guessing.
