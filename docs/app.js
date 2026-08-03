@@ -91,6 +91,7 @@ function showBlocked(url) {
   const id = (url.match(/[?&]v=([A-Za-z0-9_-]{11})/) || url.match(/([A-Za-z0-9_-]{11})(?:\?|$)/) || [])[1];
   el.localLink.href = `http://127.0.0.1:8787/${id ? `?v=${id}` : ''}`;
   el.blocked.hidden = false;
+  $('retry').hidden = false;
   el.helperHelp.hidden = false;
 }
 
