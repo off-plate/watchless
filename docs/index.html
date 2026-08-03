@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scribe</title>
+<meta name="description" content="Paste a YouTube link, read the transcript.">
+<link rel="preload" href="assets/fonts/clash-600.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/gsans-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="bar">
+  <a class="wordmark" href="./">Scribe</a>
+  <button id="status" class="status" type="button" data-state="checking">
+    <span class="dot"></span><span id="statusText">checking helper</span>
+  </button>
+</header>
+
+<main>
+
+  <section id="intake" class="intake">
+    <h1>Paste a YouTube link</h1>
+    <form id="form" class="field" autocomplete="off">
+      <input id="url" type="text" inputmode="url" spellcheck="false"
+             placeholder="youtube.com/watch?v=..." aria-label="YouTube URL">
+      <button id="go" type="submit">Read it</button>
+    </form>
+    <p id="error" class="error" hidden></p>
+
+    <div id="recentWrap" hidden>
+      <h2 class="rail-title">Recent</h2>
+      <ul id="recent" class="recent"></ul>
+    </div>
+
+    <div id="helperHelp" class="helper-help" hidden>
+      <h2 class="rail-title">Start the helper</h2>
+      <p>YouTube will not release captions to a browser, so the fetching runs on your Mac.</p>
+      <pre id="cmd"><code>cd ~/"Claude Helpers/Scribe" &amp;&amp; ./helper/start.sh</code></pre>
+      <button class="ghost" type="button" data-copy="cmd">Copy command</button>
+    </div>
+  </section>
+
+  <section id="loading" class="loading" hidden>
+    <div class="track"><span class="fill"></span></div>
+    <p id="loadingText" class="mono">asking YouTube for the video</p>
+  </section>
+
+  <section id="result" class="result" hidden>
+
+    <article class="meta">
+      <img id="thumb" class="thumb" alt="" width="320" height="180">
+      <div class="meta-text">
+        <h1 id="title"></h1>
+        <p id="facts" class="mono facts"></p>
+      </div>
+    </article>
+
+    <div class="tools">
+      <div class="search">
+        <input id="search" type="search" placeholder="Search transcript" aria-label="Search transcript">
+        <span id="hits" class="mono hits"></span>
+      </div>
+      <div class="actions">
+        <button id="toggleTs" class="ghost is-on" type="button">Timestamps</button>
+        <button id="copyAll" class="ghost" type="button">Copy</button>
+        <button id="dlTxt" class="ghost" type="button">.txt</button>
+        <button id="dlMd" class="ghost" type="button">.md</button>
+        <button id="dlSrt" class="ghost" type="button">.srt</button>
+        <button id="again" class="ghost" type="button">New link</button>
+      </div>
+    </div>
+
+    <div class="body">
+      <nav id="rail" class="rail" hidden>
+        <h2 class="rail-title">Chapters</h2>
+        <ol id="chapters"></ol>
+      </nav>
+      <div id="transcript" class="transcript"></div>
+    </div>
+
+  </section>
+
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
