@@ -9,7 +9,7 @@ const $ = (id) => document.getElementById(id);
 const el = {
   intake: $('intake'), loading: $('loading'), loadingText: $('loadingText'),
   result: $('result'), form: $('form'), url: $('url'), go: $('go'),
-  error: $('error'),
+  error: $('error'), stamp: $('stamp'),
   recentWrap: $('recentWrap'), recent: $('recent'),
   thumb: $('thumb'), title: $('title'), facts: $('facts'),
   rail: $('rail'), chapters: $('chapters'), transcript: $('transcript'),
@@ -29,7 +29,9 @@ function clock(sec, long) {
   const s = Math.max(0, Math.floor(sec));
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
   const pad = (n) => String(n).padStart(2, '0');
-  return (h || long) ? `${h}:${pad(m)}:${pad(r)}` : `${m}:${pad(r)}`;
+  // `long` is the docket's fixed-width form, so pad the hours there too.
+  if (long) return `${pad(h)}:${pad(m)}:${pad(r)}`;
+  return h ? `${h}:${pad(m)}:${pad(r)}` : `${m}:${pad(r)}`;
 }
 
 function stamp(sec, dur) { return clock(sec, dur >= 3600); }
@@ -50,9 +52,9 @@ function flash(button, label) {
 /* The provider does not report whether a track was written by the channel or
    machine-made, so do not claim either when it did not say. */
 function captions(payload) {
-  const kind = payload.captionSource === 'manual' ? 'published '
-    : payload.captionSource === 'auto' ? 'auto ' : '';
-  return `${kind}captions${payload.captionLang ? ` · ${payload.captionLang}` : ''}`;
+  const kind = payload.captionSource === 'manual' ? ' published'
+    : payload.captionSource === 'auto' ? ' auto-made' : '';
+  return `${(payload.captionLang || '??').toUpperCase()}${kind}`;
 }
 
 function slug(s) {
@@ -97,13 +99,16 @@ function render(payload) {
   el.thumb.alt = '';
   el.title.textContent = payload.title;
 
-  const facts = [
-    payload.channel,
-    `${clock(payload.duration)} long`,
-    `${payload.words.toLocaleString()} words`,
-    captions(payload),
-  ].filter(Boolean);
-  el.facts.innerHTML = facts.map((f, i) => (i === 0 ? `<b>${esc(f)}</b>` : esc(f))).join(' &nbsp;·&nbsp; ');
+  // A docket, the way a fax cover sheet lists what it is sending.
+  const rows = [
+    ['Chan', payload.channel],
+    ['Len', clock(payload.duration, true)],
+    ['Words', payload.words.toLocaleString()],
+    ['Lang', captions(payload)],
+  ].filter(([, v]) => v);
+  el.facts.innerHTML = rows
+    .map(([k, v]) => `<dt>${k}</dt><dd>${esc(String(v))}</dd>`)
+    .join('');
 
   const chapters = payload.chapters || [];
   el.body.classList.toggle('has-rail', chapters.length > 0);
@@ -117,8 +122,14 @@ function render(payload) {
   blocks.forEach((b, i) => {
     if (b.chapter > seen && chapters[b.chapter]) {
       seen = b.chapter;
+      const n = String(b.chapter + 1).padStart(2, '0');
       html.push(
-        `<h2 class="chapter" id="ch-${b.chapter}"><span class="num">${stamp(chapters[b.chapter].start, payload.duration)}</span>${esc(chapters[b.chapter].title)}</h2>`
+        `<h2 class="chapter" id="ch-${b.chapter}">` +
+          `<span class="num">[${n}]</span>` +
+          `<span class="name">${esc(chapters[b.chapter].title)}</span>` +
+          `<span class="fill"></span>` +
+          `<span class="at">${stamp(chapters[b.chapter].start, payload.duration)}</span>` +
+        `</h2>`
       );
     }
     html.push(
@@ -129,6 +140,11 @@ function render(payload) {
     );
   });
   el.transcript.innerHTML = html.join('');
+
+  // The stamp says where this copy came from, which is the one thing the header
+  // can tell you that nothing else does.
+  el.stamp.textContent = payload.cached ? 'From cache' : 'Freshly pulled';
+  el.stamp.hidden = false;
 
   el.search.value = '';
   el.hits.textContent = '';
@@ -176,7 +192,9 @@ function runSearch(query) {
       : esc(text);
   });
   marks = [...el.transcript.querySelectorAll('mark')];
-  el.hits.textContent = total ? `${total} match${total === 1 ? '' : 'es'}` : 'no matches';
+  el.hits.textContent = total
+    ? `${String(total).padStart(3, '0')} ${total === 1 ? 'match' : 'matches'}`
+    : 'no matches';
 }
 
 function cycleMark() {
@@ -241,7 +259,10 @@ function drawRecent() {
   try { list = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch { list = []; }
   el.recentWrap.hidden = list.length === 0;
   el.recent.innerHTML = list.map((r) =>
-    `<li><button type="button" data-id="${esc(r.id)}"><span class="t">${esc(r.title)}</span><span class="mono">${esc(r.channel)}</span></button></li>`
+    `<li><button type="button" data-id="${esc(r.id)}">` +
+      `<span class="t">${esc(r.title)}</span>` +
+      `<span class="c">${esc(r.channel)}</span>` +
+    `</button></li>`
   ).join('');
 }
 
@@ -266,7 +287,12 @@ function fail(message, hint) {
 
 let ticker = null;
 function tick() {
-  const steps = ['asking YouTube for the video', 'picking the caption track', 'pulling the transcript', 'still going, long videos take a moment'];
+  const steps = [
+    'Requesting the video',
+    'Choosing the caption track',
+    'Pulling the transcript',
+    'Still going, long videos take a moment',
+  ];
   let i = 0;
   el.loadingText.textContent = steps[0];
   ticker = setInterval(() => { i = Math.min(i + 1, steps.length - 1); el.loadingText.textContent = steps[i]; }, 4000);

@@ -57,12 +57,47 @@ or add a paid tier without asking him first — his finances are the reason it e
   can regroup without refetching.
 - Errors always return `{error, hint}` and the UI shows both lines.
 
-## Design
+## Design — "Printout"
 
-Follows `Jarvis/.claude/design/DESIGN.md` with the Michael's Corner palette: cream
-`#FAF7F2`, ink `#15130F`, one accent `#F2541B`. Clash Display for headings, General
-Sans for body, Space Mono for data only. Hairlines not shadows, 3px radius, one
-easing curve, no gradients.
+Watchless has its own identity and deliberately does **not** borrow Michael's Corner
+or Off-Plate tokens. Those are two separate businesses; this is a tool.
+
+The idea: a transcript is machine output, so it is set like one.
+
+| Token | Value |
+|---|---|
+| paper | `#F4F1EA` |
+| ink | `#1A1A17` |
+| muted | `#5F5B52` |
+| rule | `#D6D0C4` |
+| red | `#D2231A` — the red half of a two-colour printer ribbon, the only accent |
+| chrome type | IBM Plex Mono 400/600 |
+| reading type | IBM Plex Serif 400 |
+| radius | `0`, everywhere, no exceptions |
+| shadows | none, hairlines only |
+| motion | `120ms linear` for taps, one `200ms` ease-out, plus the caret blink |
+
+Plex is the named reference on purpose: it was drawn off IBM's typewriter and
+line-printer lettering, which is the whole concept. Fonts are self-hosted in
+`site/assets/fonts`, latin **and latin-ext** so Czech renders.
+
+Mono carries every piece of chrome. The serif carries only the transcript, because
+3,000 words of monospace is a punishment and reading is the entire product.
+
+House devices, use these rather than inventing more:
+- Buttons are bracketed labels, `[ COPY ]`, with the brackets drawn in CSS so JS can
+  still swap the text.
+- A chapter prints as a separator: `[01] TITLE ─────────── 0:00`.
+- The docket is a label/value grid, like a fax cover sheet.
+- One perforated dashed rule between docket and tools. Once, not everywhere.
+- A blinking red block caret after the wordmark.
+
+`@media print` is maintained on purpose. It is a printout, so it should print.
 
 **No subtitles under headings.** A number, a count or a state may sit under a title;
-a restatement may not.
+a restatement may not. The header stamp shows `From cache` / `Freshly pulled`,
+which is state, not a tagline. It must never become one.
+
+**Gotcha:** author `display` beats the UA sheet's `[hidden]`, so `[hidden]
+{display:none!important}` is load-bearing. Without it the full-height flex sections
+keep their height while "hidden" and leave a viewport of blank above the result.

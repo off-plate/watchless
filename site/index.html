@@ -5,67 +5,75 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Watchless</title>
 <meta name="description" content="Paste a YouTube link, read the transcript.">
-<link rel="preload" href="assets/fonts/clash-600.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="assets/fonts/gsans-400.woff2" as="font" type="font/woff2" crossorigin>
+<meta name="theme-color" content="#F4F1EA">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preload" href="assets/fonts/plexmono-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/plexserif-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
 <header class="bar">
-  <a class="wordmark" href="./">Watchless</a>
+  <a class="wordmark" href="./">Watchless<span class="caret" aria-hidden="true"></span></a>
+  <p class="stamp" id="stamp" hidden></p>
 </header>
 
 <main>
 
   <section id="intake" class="intake">
     <h1>Paste a YouTube link</h1>
-    <form id="form" class="field" autocomplete="off">
+
+    <form id="form" class="prompt" autocomplete="off">
+      <span class="chevron" aria-hidden="true">&gt;</span>
       <input id="url" type="text" inputmode="url" spellcheck="false"
              placeholder="youtube.com/watch?v=..." aria-label="YouTube URL">
-      <button id="go" type="submit">Read it</button>
+      <button id="go" type="submit" class="key">Read it</button>
     </form>
+
     <p id="error" class="error" hidden></p>
 
-    <div id="recentWrap" hidden>
-      <h2 class="rail-title">Recent</h2>
-      <ul id="recent" class="recent"></ul>
+    <div id="recentWrap" class="panel" hidden>
+      <h2 class="label">Recent</h2>
+      <ol id="recent" class="recent"></ol>
     </div>
-
   </section>
 
   <section id="loading" class="loading" hidden>
-    <div class="track"><span class="fill"></span></div>
-    <p id="loadingText" class="mono">asking YouTube for the video</p>
+    <p class="label" id="loadingText">Requesting the video</p>
+    <div class="ticker" aria-hidden="true"><span></span></div>
   </section>
 
   <section id="result" class="result" hidden>
 
-    <article class="meta">
+    <article class="docket">
       <img id="thumb" class="thumb" alt="" width="320" height="180">
-      <div class="meta-text">
+      <div class="docket-body">
         <h1 id="title"></h1>
-        <p id="facts" class="mono facts"></p>
+        <dl id="facts" class="facts"></dl>
       </div>
     </article>
 
+    <div class="perf" aria-hidden="true"></div>
+
     <div class="tools">
-      <div class="search">
+      <div class="find">
+        <span class="chevron" aria-hidden="true">/</span>
         <input id="search" type="search" placeholder="Search transcript" aria-label="Search transcript">
-        <span id="hits" class="mono hits"></span>
+        <span id="hits" class="hits"></span>
       </div>
       <div class="actions">
-        <button id="toggleTs" class="ghost is-on" type="button">Timestamps</button>
-        <button id="copyAll" class="ghost" type="button">Copy</button>
-        <button id="dlTxt" class="ghost" type="button">.txt</button>
-        <button id="dlMd" class="ghost" type="button">.md</button>
-        <button id="dlSrt" class="ghost" type="button">.srt</button>
-        <button id="again" class="ghost" type="button">New link</button>
+        <button id="toggleTs" class="key is-on" type="button">Timestamps</button>
+        <button id="copyAll" class="key" type="button">Copy</button>
+        <button id="dlTxt" class="key" type="button">txt</button>
+        <button id="dlMd" class="key" type="button">md</button>
+        <button id="dlSrt" class="key" type="button">srt</button>
+        <button id="again" class="key" type="button">New</button>
       </div>
     </div>
 
     <div class="body">
       <nav id="rail" class="rail" hidden>
-        <h2 class="rail-title">Chapters</h2>
+        <h2 class="label">Chapters</h2>
         <ol id="chapters"></ol>
       </nav>
       <div id="transcript" class="transcript"></div>
