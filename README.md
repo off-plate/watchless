@@ -43,6 +43,13 @@ It also reports `freeCaptions`, which says whether YouTube is currently answerin
 this host or refusing it as a bot. Refusing is normal for a server address and
 only means more videos spend a credit.
 
+If a change you expect is missing entirely, check Netlify's **Deploys** tab before
+suspecting the code. Builds stop while the account has a billing problem, and
+clearing the billing does not go back and build what it missed — the site keeps
+serving the last deploy that succeeded until something new lands on `main` or you
+trigger a deploy by hand. A site can sit weeks behind the repository this way and
+look, from the outside, like a bug.
+
 If the key is there and a link still fails, the error names the reason: a refused
 key, an exhausted provider account, a video that does not exist, or a video with
 no captions at all. Add `&debug=1` to the request to see what every source said.
