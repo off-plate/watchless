@@ -18,34 +18,60 @@ Nothing runs on Michael's machine, and that is a requirement, not a detail.
 `site/` is the whole UI, vanilla JS and CSS, no build step. It talks to exactly one
 endpoint, `/api/transcript`, and holds no keys.
 
-`netlify/functions/transcript.mjs` is the only backend. Order: Supabase cache, then
-monthly quota check, then Supadata. Keys live in Netlify environment variables.
+`netlify/functions/transcript.mjs` is the only backend. Order, cheapest first:
+Supabase cache, then YouTube's own InnerTube API for metadata and again for
+captions, then the monthly quota check, then Supadata for whatever is left. Keys
+live in Netlify environment variables.
 
 `supabase/schema.sql` creates `watchless_transcripts` (cache) and `watchless_usage`
 (spend counter) plus `watchless_spend()`, an atomic increment so two simultaneous
 requests cannot both slip past the cap. Both tables have RLS on and no anon policy,
 so a browser can read nothing.
 
-## Why the provider is not optional
+## What YouTube still gives away, and what it does not
 
-Measured 2026-08-03, and re-verify before anyone "simplifies" this away:
+Re-measured 2026-08-20 against `youtubei/v1/player`, YouTube's own app API. It
+needs no key of ours: `INNERTUBE_KEY` is the one served inside youtube.com's HTML
+to every visitor. It answers each client differently, and over ten videos from a
+datacenter IP:
+
+- `ANDROID_TESTSUITE` never plays anything, but returns `videoDetails` for **9 of
+  10** — title, channel, duration, description. That is every metadata field this
+  used to buy, so metadata is now free and `YOUTUBE_API_KEY` is redundant.
+- `ANDROID_VR` returned caption tracks for **1 of 10**. The other nine answered
+  `LOGIN_REQUIRED`, "Sign in to confirm you're not a bot". That is the IP's
+  reputation and not the video: a residential address does far better, which is
+  why the number here is a floor rather than a verdict.
+- `ANDROID`, `IOS`, `WEB`, `MWEB`, `WEB_CREATOR` and the TVHTML5 clients are all
+  dead ends: 400, `UNPLAYABLE` or `LOGIN_REQUIRED` every time.
+
+Still true, so do not go back down these roads:
 
 - youtube.com sends no `Access-Control-Allow-Origin`, so browser-side is dead.
-- The signed `timedtext` URL returns an **empty body** — this was true from a
-  residential IP as well as a server, so it is not about datacenter blocking. The
-  endpoint wants a PO token.
-- allorigins, corsproxy.io and r.jina.ai all came back bot-blocked or 401.
+  `youtubei.googleapis.com` is worse — an `Origin` header alone earns a 403 — so
+  there is no version of this that runs in the visitor's browser.
+- The WEB client's `timedtext` URL returns an **empty body**: it wants a PO token.
+  The URL `ANDROID_VR` hands back is a different, signed one carrying
+  `ip=0.0.0.0&ipbits=0`, so it is valid from any address, Netlify's included.
+- `youtubei/v1/get_transcript` answers "Precondition check failed" for every
+  client context tried, including with `visitorData`.
 - yt-dlp works only by fetching YouTube's player JS and solving a challenge with a
   JS runtime. A 26-second serverless function is not going to reimplement that.
 
-`fromYouTube()` stays in the file as a long shot, tried only when no provider key is
-set. If YouTube ever relaxes, it resumes working on its own and costs nothing.
+So the provider stays, but as the fallback rather than the opening move. It is
+asked only for transcripts the free path could not get, and never for metadata.
 
 ## Money rules
 
 The cache is what makes this affordable: one credit per video, ever. `MONTHLY_CAP`
 (default 90, under Supadata's free 100) is a hard stop, not a warning. Never raise it
 or add a paid tier without asking him first — his finances are the reason it exists.
+
+A request can only ever buy the transcript itself now, so a credit means one video
+rather than two. The cap is checked immediately before the paid call instead of at
+the top, which means a month sitting at its cap still serves everything the cache
+and the free path can reach. When YouTube plays a video and lists no captions at
+all, that is treated as the answer and nothing is bought to confirm it.
 
 ## Conventions
 
