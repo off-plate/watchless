@@ -13,6 +13,7 @@ const el = {
   recentWrap: $('recentWrap'), recent: $('recent'),
   thumb: $('thumb'), title: $('title'), facts: $('facts'),
   rail: $('rail'), chapters: $('chapters'), transcript: $('transcript'),
+  brief: $('brief'), briefAbout: $('briefAbout'), briefPoints: $('briefPoints'),
   search: $('search'), hits: $('hits'), body: document.querySelector('.body'),
 };
 
@@ -109,6 +110,16 @@ function render(payload) {
   el.facts.innerHTML = rows
     .map(([k, v]) => `<dt>${k}</dt><dd>${esc(String(v))}</dd>`)
     .join('');
+
+  // The brief only exists on videos summarised since the feature landed, so the
+  // panel has to be able to not be there at all.
+  const brief = payload.summary;
+  el.brief.hidden = !brief;
+  if (brief) {
+    el.briefAbout.textContent = brief.about || '';
+    el.briefAbout.hidden = !brief.about;
+    el.briefPoints.innerHTML = (brief.takeaways || []).map((t) => `<li>${esc(t)}</li>`).join('');
+  }
 
   const chapters = payload.chapters || [];
   el.body.classList.toggle('has-rail', chapters.length > 0);
@@ -232,6 +243,13 @@ function asMarkdown() {
     `${current.channel} · ${clock(current.duration)} · ${captions(current)}`,
     current.url, '',
   ];
+  // The brief travels with the copy, since it is the part worth keeping.
+  const brief = current.summary;
+  if (brief) {
+    if (brief.about) head.push(brief.about, '');
+    (brief.takeaways || []).forEach((t) => head.push(`- ${t}`));
+    head.push('');
+  }
   return `${head.join('\n')}\n${asText(true)}\n`;
 }
 

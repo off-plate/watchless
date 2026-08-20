@@ -155,6 +155,22 @@ main{max-width:var(--shell);margin:0 auto;padding:0 clamp(18px,4vw,40px) 120px}
   background:repeating-linear-gradient(90deg,var(--rule) 0 6px,transparent 6px 12px);
 }
 
+/* ----------------------------------------------------------------- brief */
+/* What the video is and what it says, printed above the transcript the way an
+   abstract sits above a report. Serif, because this is reading, not chrome. */
+.brief{margin-top:38px;border-top:1px solid var(--ink);padding-top:16px;max-width:70ch}
+.brief-about{margin:13px 0 0;font:400 17px/1.55 var(--serif)}
+.brief-points{list-style:none;margin:19px 0 0;padding:0;counter-reset:kp}
+.brief-points li{
+  counter-increment:kp;position:relative;padding-left:36px;margin-top:11px;
+  font:400 15px/1.55 var(--serif);
+}
+.brief-points li::before{
+  content:"[" counter(kp,decimal-leading-zero) "]";
+  position:absolute;left:0;top:3px;
+  font:400 11px/1.4 var(--mono);letter-spacing:.06em;color:var(--red);
+}
+
 /* ----------------------------------------------------------------- tools */
 .tools{
   display:flex;gap:20px;align-items:center;justify-content:space-between;flex-wrap:wrap;
@@ -249,5 +265,6 @@ mark.on{background:var(--red);color:var(--paper)}
   .block{grid-template-columns:54px 1fr;page-break-inside:avoid}
   .block .ts{color:#666}
   .chapter{page-break-after:avoid;padding-top:20pt}
+  .brief{page-break-inside:avoid;border-top:1pt solid #000}
   a{text-decoration:none}
 }

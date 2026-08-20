@@ -23,6 +23,12 @@ Supabase cache, then YouTube's own InnerTube API for metadata and again for
 captions, then the monthly quota check, then Supadata for whatever is left. Keys
 live in Netlify environment variables.
 
+The brief — what the video is, and the takeaways — is the last thing bought and
+the first thing read. Grok writes it, reusing the key the dashboard already has.
+It is cached inside the transcript payload, so a video is summarised once and
+never again, and it is optional in the strict sense: no key, no panel, everything
+else unchanged.
+
 `supabase/schema.sql` creates `watchless_transcripts` (cache) and `watchless_usage`
 (spend counter) plus `watchless_spend()`, an atomic increment so two simultaneous
 requests cannot both slip past the cap. Both tables have RLS on and no anon policy,
@@ -66,6 +72,12 @@ asked only for transcripts the free path could not get, and never for metadata.
 The cache is what makes this affordable: one credit per video, ever. `MONTHLY_CAP`
 (default 90, under Supadata's free 100) is a hard stop, not a warning. Never raise it
 or add a paid tier without asking him first — his finances are the reason it exists.
+
+The brief is a second bill, so it gets a second ceiling: `SUMMARY_CAP`, counted
+separately. The counter's key is plain text, so this needed no migration —
+transcripts count under `2026-08` and briefs under `2026-08:summary`, in the one
+table, through the one atomic increment. A failed brief never fails a good
+transcript.
 
 A request can only ever buy the transcript itself now, so a credit means one video
 rather than two. The cap is checked immediately before the paid call instead of at
@@ -117,6 +129,8 @@ House devices, use these rather than inventing more:
 - The docket is a label/value grid, like a fax cover sheet.
 - One perforated dashed rule between docket and tools. Once, not everywhere.
 - A blinking red block caret after the wordmark.
+- The brief is an abstract: serif, above the perforation, takeaways numbered
+  `[01]` in red down the left.
 
 `@media print` is maintained on purpose. It is a printout, so it should print.
 

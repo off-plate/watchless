@@ -57,6 +57,15 @@ const CAPTION_CLIENT = {
 };
 const META_CLIENT = { clientName: 'ANDROID_TESTSUITE', clientVersion: '1.9', androidSdkVersion: 30 };
 
+// The brief. Grok, because the key already exists for the dashboard. Unset, and
+// everything else still works — the panel simply does not appear.
+const XAI_KEY = process.env.XAI_API_KEY || process.env.GROK_API_KEY || '';
+const XAI_URL = 'https://api.x.ai/v1/chat/completions';
+const XAI_MODEL = process.env.SUMMARY_MODEL || 'grok-4';
+// Its own ceiling, because it is its own bill. `?selftest=1` lists the model ids
+// this key can actually reach, which is the thing to check if summaries go quiet.
+const SUMMARY_CAP = Number(process.env.SUMMARY_CAP || MONTHLY_CAP);
+
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
 
@@ -95,7 +104,7 @@ const json = (status, body) => new Response(JSON.stringify(body), {
 /** Never let an upstream message echo a key back into the page. */
 function redact(text) {
   let out = String(text);
-  for (const secret of [SUPADATA_KEY, SB_KEY, YT_KEY]) {
+  for (const secret of [SUPADATA_KEY, SB_KEY, YT_KEY, XAI_KEY]) {
     if (secret) out = out.split(secret).join('[redacted]');
   }
   return out;
@@ -353,6 +362,66 @@ async function fromDataApi(id) {
   };
 }
 
+/* --------------------------------------------------------------- summary */
+
+const BRIEF = `You are reading the transcript of a YouTube video for someone deciding whether they need to watch it at all.
+
+Reply with JSON only, in exactly this shape:
+{"about": "one or two sentences on what this video is and who it is for",
+ "takeaways": ["the substantive points, one per string, between three and seven of them"]}
+
+Write in the same language the transcript is in. Every takeaway must carry the actual claim, finding or instruction, so that reading the list is a real substitute for watching: "Interest rates, not demand, drove the 2021 price rise" rather than "Discussion of interest rates". Order them as the video makes them. No preamble, no markdown, no numbering, nothing outside the JSON.`;
+
+/** What the video is and what it says. Bought once per video: the result is
+ *  cached inside the transcript payload, so reopening one never asks again. */
+async function summarise(payload) {
+  const res = await fetch(XAI_URL, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${XAI_KEY}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: XAI_MODEL,
+      temperature: 0.2,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: BRIEF },
+        {
+          role: 'user',
+          content: `Title: ${payload.title}\nChannel: ${payload.channel}\n\n`
+            + payload.segments.map((s) => s.text).join(' '),
+        },
+      ],
+    }),
+  });
+
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    // xAI reports errors as a string on some paths and an object on others.
+    const said = typeof body.error === 'string'
+      ? body.error
+      : body.error?.message || body.message || `grok ${res.status}`;
+    const err = new Error(redact(said));
+    err.status = res.status;
+    throw err;
+  }
+
+  const raw = String(body.choices?.[0]?.message?.content || '');
+  let parsed;
+  try {
+    parsed = JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g, ''));
+  } catch {
+    throw new Error(`brief was not json: ${raw.slice(0, 60).replace(/\s+/g, ' ')}`);
+  }
+
+  const about = String(parsed.about || '').trim();
+  const takeaways = (Array.isArray(parsed.takeaways) ? parsed.takeaways : [])
+    .map((t) => String(t).trim())
+    .filter(Boolean)
+    .slice(0, 7);
+  if (!about && !takeaways.length) throw new Error('brief came back empty');
+
+  return { about, takeaways, model: body.model || XAI_MODEL };
+}
+
 /* ----------------------------------------------------------------- cache */
 
 async function cacheGet(id) {
@@ -374,19 +443,23 @@ async function cacheGet(id) {
 
 const thisMonth = () => new Date().toISOString().slice(0, 7);
 
-/** Counts only calls that would spend a credit. Cache hits never reach here. */
-async function quota() {
-  if (!SB_URL || !SB_KEY) return { used: 0, allowed: true };
+/** Counts only calls that would spend money. Cache hits never reach here.
+ *
+ *  The counter's key is plain text, so a second budget needs no migration to the
+ *  schema: transcripts count under '2026-08' and briefs under '2026-08:summary'.
+ *  Two ceilings, one table, one atomic increment already written. */
+async function quota(key = thisMonth(), cap = MONTHLY_CAP) {
+  if (!SB_URL || !SB_KEY) return { used: 0, allowed: true, month: key };
   try {
-    const month = thisMonth();
-    const res = await fetch(`${SB_URL}/rest/v1/${USAGE}?month=eq.${month}&select=count`, {
-      headers: { apikey: SB_KEY, authorization: `Bearer ${SB_KEY}` },
-    });
+    const res = await fetch(
+      `${SB_URL}/rest/v1/${USAGE}?month=eq.${encodeURIComponent(key)}&select=count`,
+      { headers: { apikey: SB_KEY, authorization: `Bearer ${SB_KEY}` } }
+    );
     const rows = res.ok ? await res.json() : [];
     const used = rows[0]?.count || 0;
-    return { used, allowed: used + WORST_CASE <= MONTHLY_CAP, month };
+    return { used, allowed: used + WORST_CASE <= cap, month: key };
   } catch {
-    return { used: 0, allowed: true };
+    return { used: 0, allowed: true, month: key };
   }
 }
 
@@ -493,6 +566,22 @@ async function selftest() {
     out.freeCaptions = `working — ${probe.segments.length} cues (${probe.captionLang}) pulled from the probe video for nothing, so videos YouTube allows will not spend a credit`;
   } catch (err) {
     out.freeCaptions = `refused by YouTube: ${redact(err.message)}. Normal for a server address; it only means every new video spends a credit.`;
+  }
+  out.summary = XAI_KEY
+    ? `key set, asking for model "${XAI_MODEL}"`
+    : 'XAI_API_KEY is unset — no briefs, and everything else still works';
+  if (XAI_KEY) {
+    try {
+      const res = await fetch('https://api.x.ai/v1/models', {
+        headers: { authorization: `Bearer ${XAI_KEY}` },
+      });
+      const body = await res.json().catch(() => ({}));
+      out.summaryModels = res.ok
+        ? (body.data || []).map((m) => m.id)
+        : `could not list models (${res.status}) — ${redact(JSON.stringify(body).slice(0, 120))}`;
+    } catch (err) {
+      out.summaryModels = redact(err.message);
+    }
   }
   return json(200, out);
 }
@@ -608,6 +697,24 @@ export default async (request) => {
     cached: false,
     ...(debug ? { via: core.via, tried } : {}),
   };
+
+  // The brief is the last thing bought and the first thing read. It has its own
+  // ceiling because it is its own bill, and it is cached with the transcript, so
+  // a video is summarised once and never again.
+  if (XAI_KEY) {
+    const budget = await quota(`${thisMonth()}:summary`, SUMMARY_CAP);
+    if (!budget.allowed) {
+      tried.push(`summary: ${budget.used} already this month, cap ${SUMMARY_CAP}`);
+    } else {
+      try {
+        payload.summary = await summarise(payload);
+        await spend(budget.month);
+      } catch (err) {
+        // A missing brief is not worth failing a good transcript over.
+        tried.push(`summary: ${err.message}`);
+      }
+    }
+  }
 
   await cachePut(id, payload);
   return json(200, payload);

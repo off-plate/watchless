@@ -17,7 +17,20 @@ Nothing runs on anyone's machine. The site is static, the fetching happens in on
 | `SUPABASE_URL` | yes | Cache and spend counter. Without it every read costs a credit. |
 | `SUPABASE_SERVICE_KEY` | yes | Same. Service key, never the anon key, and never in the site folder. |
 | `MONTHLY_CAP` | no | New transcripts allowed per month. Defaults to 90, under the free 100. |
+| `XAI_API_KEY` | no | Grok, for the brief above each transcript. Unset, and the panel simply does not appear. |
+| `SUMMARY_MODEL` | no | Which Grok model writes the brief. Defaults to `grok-4`; `?selftest=1` lists the ids your key can actually reach. |
+| `SUMMARY_CAP` | no | Briefs allowed per month, counted separately from transcripts. Defaults to the same number as `MONTHLY_CAP`. |
 | `YOUTUBE_API_KEY` | no | Was for duration and chapters. Those now come free from YouTube's own app API, so this is a fallback for the rare video that misses. |
+
+## The brief
+
+Above each transcript sits a short panel: what the video is, and the points it
+actually makes. It is written by Grok from the transcript, once per video, and
+cached with it — reopening a video never asks again. It travels with the `.md`
+export too, since it is the part worth keeping.
+
+Videos read before this existed have no brief. Add `&refresh=1` to the request to
+re-fetch one and pick it up.
 
 ## What is free and what is bought
 
