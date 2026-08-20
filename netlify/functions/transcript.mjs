@@ -2,20 +2,33 @@
  *
  * GET /.netlify/functions/transcript?url=<youtube link>
  *
- * Order of operations:
+ * Order of operations, cheapest first:
  *   1. Supabase cache      — free, instant, and the reason credits last. A video
  *                            already read costs nothing ever again.
- *   2. Monthly quota check — refuses to spend past MONTHLY_CAP so the free tier
- *                            can never quietly turn into a bill.
- *   3. Supadata            — the provider. Required, not optional.
- *   4. Direct from YouTube — kept as a long shot only.
+ *   2. InnerTube metadata  — free. Title, channel, duration and description, so
+ *                            the provider is never paid for any of them.
+ *   3. InnerTube captions  — free. Often refused, but a hit means this video
+ *                            costs nothing at all.
+ *   4. Monthly quota check — only now, because only from here can a request
+ *                            spend. A month at its cap still reads anything
+ *                            steps 2 and 3 can reach.
+ *   5. Supadata            — the provider, for the transcript alone.
  *
- * On 4: measured 2026-08-03 from both a residential IP and a server, YouTube's
- * timedtext endpoint returns an EMPTY body without a PO token. yt-dlp only gets
- * through by running YouTube's player JS and solving a challenge, which is not
- * something a 26-second serverless function is going to do. So this path is
- * tried only when no provider key is set, and it is expected to fail. If YouTube
- * ever relaxes, it starts working again on its own.
+ * On 2 and 3: YouTube's own app API, youtubei/v1/player, needs no key of ours —
+ * the key below ships in youtube.com's own pages. It answers different clients
+ * differently, and measured 2026-08-20 from a datacenter IP over ten videos:
+ *
+ *   ANDROID_VR         returned captions for 1 of 10. The other nine answered
+ *                      LOGIN_REQUIRED, "Sign in to confirm you're not a bot".
+ *                      That is the IP's reputation, not the video, and a
+ *                      residential address does better. Free, so always ask.
+ *   ANDROID_TESTSUITE  never plays anything, but hands back videoDetails for
+ *                      9 of 10 — every metadata field this used to buy.
+ *
+ * The old watch-page scrape is gone: it fetched the same player response by a
+ * worse route, and the WEB caption URL it produced is the PO-token-gated one
+ * that returns an empty body. The signed URL these clients return carries
+ * ip=0.0.0.0&ipbits=0, so it is valid from any address, including Netlify's.
  *
  * `?debug=1` reports which path won and what the others said.
  */
@@ -29,6 +42,20 @@ const USAGE = 'watchless_usage';
 const CACHE_DAYS = 90;
 // Just under Supadata's 100/month free tier, so a busy month stops rather than bills.
 const MONTHLY_CAP = Number(process.env.MONTHLY_CAP || 90);
+// Metadata is free now, so a request can only ever buy the transcript itself.
+const WORST_CASE = 1;
+
+// YouTube's own public InnerTube key. It is not a secret and not ours: it is
+// served inside youtube.com's HTML to every visitor.
+const INNERTUBE = 'https://youtubei.googleapis.com/youtubei/v1/player';
+const INNERTUBE_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
+
+// Two clients, two jobs. See the note at the top for what each one measured.
+const CAPTION_CLIENT = {
+  clientName: 'ANDROID_VR', clientVersion: '1.60.19',
+  deviceModel: 'Quest 3', androidSdkVersion: 32,
+};
+const META_CLIENT = { clientName: 'ANDROID_TESTSUITE', clientVersion: '1.9', androidSdkVersion: 30 };
 
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
@@ -64,6 +91,27 @@ const json = (status, body) => new Response(JSON.stringify(body), {
   status,
   headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
 });
+
+/** Never let an upstream message echo a key back into the page. */
+function redact(text) {
+  let out = String(text);
+  for (const secret of [SUPADATA_KEY, SB_KEY, YT_KEY]) {
+    if (secret) out = out.split(secret).join('[redacted]');
+  }
+  return out;
+}
+
+/** An upstream failure that keeps its status code. The status is the whole
+ *  difference between "the key is wrong" and "the video has no captions", and
+ *  throwing a bare string threw that difference away. */
+function upstream(label, res, body) {
+  const err = new Error(redact(body.message || body.error || `${label} ${res.status}`));
+  err.status = res.status;
+  return err;
+}
+
+/** Auth and quota refusals will refuse the same way twice; nothing else will. */
+const terminal = (err) => [401, 402, 403, 429].includes(err?.status);
 
 async function get(url, extra = {}) {
   return fetch(url, {
@@ -128,35 +176,79 @@ function chaptersFromDescription(text, duration) {
   }));
 }
 
-/** Strategy 2: straight off the watch page. Free, and blocked more often than not. */
-async function fromYouTube(id) {
-  const res = await get(`https://www.youtube.com/watch?v=${id}`);
-  if (!res.ok) throw new Error(`watch page ${res.status}`);
-  const html = await res.text();
+/** YouTube's app API. No key of ours, no quota, no bill. */
+async function innertube(client, id) {
+  const res = await fetch(`${INNERTUBE}?key=${INNERTUBE_KEY}&prettyPrint=false`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'user-agent': UA },
+    body: JSON.stringify({
+      context: { client: { ...client, hl: 'en', gl: 'US' } },
+      videoId: id,
+      contentCheckOk: true,
+      racyCheckOk: true,
+    }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw upstream('innertube', res, body.error || body);
+  return body;
+}
 
-  const m = html.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;\s*(?:var|const|let|<\/script>)/s);
-  if (!m) throw new Error('no player response (bot check)');
+/** Title, channel, duration and chapters, for nothing. This is what the provider
+ *  used to be paid a credit for, and what YOUTUBE_API_KEY was optional for. */
+async function metaFromYouTube(id) {
+  const d = await innertube(META_CLIENT, id);
+  const v = d.videoDetails || {};
+  if (!v.title) throw new Error('no video details');
+  const duration = Number(v.lengthSeconds || 0);
+  return {
+    title: v.title,
+    channel: v.author || '',
+    duration,
+    chapters: chaptersFromDescription(v.shortDescription, duration),
+    language: v.defaultAudioLanguage || '',
+    billed: 0,
+  };
+}
 
-  let player;
-  try { player = JSON.parse(m[1]); } catch { throw new Error('player response unparseable'); }
-
-  const status = player.playabilityStatus || {};
+/** The free transcript. Refused more often than not from a datacenter address,
+ *  but it costs nothing to ask and a hit means this video never buys anything. */
+async function captionsFromYouTube(id) {
+  const d = await innertube(CAPTION_CLIENT, id);
+  const status = d.playabilityStatus || {};
   if (status.status && status.status !== 'OK') {
-    throw new Error(`${status.status}: ${status.reason || 'unavailable'}`);
+    throw new Error(`${status.status}: ${status.reason || 'no reason given'}`);
   }
 
-  const tracks = player.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
-  if (!tracks.length) throw new Error('no caption tracks');
+  const tracks = d.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+  if (!tracks.length) {
+    // YouTube played the video and listed no captions. That is not a refusal to
+    // answer, it is the answer, so there is nothing worth buying afterwards.
+    const err = new Error('no caption tracks');
+    err.certain = true;
+    throw err;
+  }
 
-  const details = player.videoDetails || {};
+  const details = d.videoDetails || {};
   const chosen = pickTrack(tracks, details.defaultAudioLanguage || tracks[0].languageCode);
   if (!chosen) throw new Error('no usable caption track');
 
-  const capRes = await get(`${chosen.track.baseUrl}&fmt=json3`);
-  const body = await capRes.text();
-  if (!body.trim()) throw new Error('caption body empty (PO token required)');
+  // The URL arrives asking for srv3; json3 is the one without rolling duplicates.
+  const capUrl = new URL(chosen.track.baseUrl);
+  capUrl.searchParams.set('fmt', 'json3');
+  const capRes = await get(capUrl.toString());
+  if (!capRes.ok) throw new Error(`caption fetch ${capRes.status}`);
+  const text = await capRes.text();
+  if (!text.trim()) throw new Error('caption body empty (PO token required)');
 
-  const segments = parseJson3(JSON.parse(body));
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    // Almost always a consent or bot-check page served in place of the captions.
+    throw new Error(`caption body was not json3: ${text.slice(0, 60).replace(/\s+/g, ' ')}`);
+  }
+
+  const segments = parseJson3(data);
   if (!segments.length) throw new Error('caption track had no cues');
 
   const duration = Number(details.lengthSeconds || 0);
@@ -169,25 +261,7 @@ async function fromYouTube(id) {
     duration,
     chapters: chaptersFromDescription(details.shortDescription, duration),
     via: 'youtube',
-  };
-}
-
-/** Supadata video metadata: title, channel, duration, description, caption languages.
- *  Costs a credit, so it is only called when there is no free YouTube key. */
-async function supadataVideo(id) {
-  const res = await fetch(`https://api.supadata.ai/v1/youtube/video?id=${id}`, {
-    headers: { 'x-api-key': SUPADATA_KEY },
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.message || body.error || `supadata video ${res.status}`);
-  const duration = Number(body.duration || 0);
-  return {
-    title: body.title || '',
-    channel: body.channel?.name || '',
-    duration,
-    chapters: chaptersFromDescription(body.description, duration),
-    langs: body.transcriptLanguages || [],
-    billed: 1,
+    billed: 0,
   };
 }
 
@@ -204,7 +278,7 @@ async function fromSupadata(id, want) {
     headers: { 'x-api-key': SUPADATA_KEY },
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.message || body.error || `supadata ${res.status}`);
+  if (!res.ok) throw upstream('supadata', res, body);
 
   const raw = body.content;
   if (!Array.isArray(raw) || !raw.length) throw new Error('supadata returned no cues');
@@ -233,24 +307,24 @@ async function fromSupadata(id, want) {
   };
 }
 
-/** Which caption language to ask for, best signal first. */
-function preferLang(metaLang, available) {
-  const pool = (available || []).map((l) => String(l).toLowerCase());
-  const base = (l) => String(l || '').split('-')[0].toLowerCase();
-  if (metaLang) {
-    const hit = pool.find((l) => base(l) === base(metaLang));
-    if (hit) return hit;
-    if (!pool.length) return base(metaLang);
-  }
-  const english = pool.find((l) => base(l) === 'en');
-  return english || pool[0] || 'en';
+/** Which caption language to ask the provider for. YouTube's own metadata is the
+ *  signal; when it stays quiet, English is the guess, and the retry without any
+ *  language is what catches the guess being wrong. Asking for nothing up front is
+ *  worse than guessing: unset, the provider returns the first language
+ *  alphabetically, so an English video comes back in Arabic. */
+function preferLang(metaLang) {
+  return metaLang ? String(metaLang).split('-')[0].toLowerCase() : 'en';
 }
 
 /* -------------------------------------------------------------- metadata */
 
 /** Free, no key, no quota. Gives title, channel, thumbnail. */
 async function fromOembed(id) {
-  const res = await get(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${id}&format=json`);
+  // The inner URL has to be encoded. Unencoded, `?v=` and `&format=` bind to the
+  // oembed call instead, so it was asking about `/watch` with no video and being
+  // told 401 every time.
+  const target = encodeURIComponent(`https://www.youtube.com/watch?v=${id}`);
+  const res = await get(`https://www.youtube.com/oembed?url=${target}&format=json`);
   if (!res.ok) return {};
   const d = await res.json().catch(() => ({}));
   return { title: d.title || '', channel: d.author_name || '' };
@@ -310,7 +384,7 @@ async function quota() {
     });
     const rows = res.ok ? await res.json() : [];
     const used = rows[0]?.count || 0;
-    return { used, allowed: used < MONTHLY_CAP, month };
+    return { used, allowed: used + WORST_CASE <= MONTHLY_CAP, month };
   } catch {
     return { used: 0, allowed: true };
   }
@@ -352,11 +426,84 @@ async function cachePut(id, payload) {
   } catch { /* a cache miss is not worth failing the request over */ }
 }
 
+/* ----------------------------------------------------------- diagnostics */
+
+/** Name the real failure. The old answer to every provider error was "this video
+ *  has no captions", which sends you off to blame the video when the usual cause
+ *  is a key Netlify never got. */
+function diagnose(err, hasKey) {
+  const status = err?.status || 0;
+  const said = err?.message || '';
+  if (status === 401 || status === 403) {
+    return [502, 'The transcript provider refused the key',
+      `Supadata answered ${status}, so SUPADATA_API_KEY is missing, mistyped, or expired. Check it in Netlify and redeploy after changing it. It said: ${said}`];
+  }
+  if (status === 402 || status === 429) {
+    return [502, 'The provider account is out of credits',
+      `Supadata answered ${status}. That is their limit, not the cap of ${MONTHLY_CAP} this site keeps. Their free tier resets monthly. It said: ${said}`];
+  }
+  // Order matters: a missing transcript also comes back as a 404, so read what it
+  // says before trusting the number, or every silent video becomes a dead link.
+  if (/\bno (caption|subtitle|transcript)|transcript.{0,20}not available|not available.{0,20}(transcript|language)/i.test(said)) {
+    return [502, 'That video has no captions',
+      `Nobody published subtitles and YouTube made none automatically, so there is nothing to read. The provider said: ${said}`];
+  }
+  if (status === 404 || /not found|unavailable|private|does not exist/i.test(said)) {
+    return [404, 'That video does not exist',
+      'It may be private, deleted, region-locked, or the link may have a typo in it.'];
+  }
+  if (!hasKey) {
+    return [502, 'No transcript provider is configured',
+      `YouTube refused the free path for this video and there is no provider to fall back on. Add SUPADATA_API_KEY in Netlify under Site configuration \u2192 Environment variables, then redeploy. YouTube said: ${said || 'nothing useful'}`];
+  }
+  return [502, 'Could not get a transcript for that video',
+    said ? `The provider said: ${said}` : 'No source would answer. Add &debug=1 to the request to see what each one said.'];
+}
+
+/** What is configured and what answers, spending nothing. When the app reads
+ *  nothing at all, this says which of the three moving parts is missing without
+ *  anyone pasting links to find out. Booleans only, never a key. */
+async function selftest() {
+  const out = {
+    provider: SUPADATA_KEY ? 'SUPADATA_API_KEY is set' : 'SUPADATA_API_KEY is MISSING \u2014 nothing will load',
+    cache: SB_URL && SB_KEY ? 'Supabase is configured' : 'Supabase is MISSING \u2014 every read would cost a credit',
+    youtubeKey: YT_KEY ? 'YOUTUBE_API_KEY is set' : 'YOUTUBE_API_KEY is unset (optional: chapters and exact duration)',
+    monthlyCap: MONTHLY_CAP,
+  };
+  if (SB_URL && SB_KEY) {
+    try {
+      const res = await fetch(`${SB_URL}/rest/v1/${USAGE}?select=month,count&month=eq.${thisMonth()}`, {
+        headers: { apikey: SB_KEY, authorization: `Bearer ${SB_KEY}` },
+      });
+      out.cacheReachable = res.ok;
+      out.cacheStatus = res.status;
+      if (res.ok) out.spentThisMonth = (await res.json().catch(() => []))[0]?.count || 0;
+      else out.cacheSaid = redact((await res.text().catch(() => '')).slice(0, 200));
+    } catch (err) {
+      out.cacheReachable = false;
+      out.cacheSaid = redact(err.message);
+    }
+  }
+  // The whole free path, end to end, against a video that certainly has captions.
+  // Not just the player call: the caption fetch is the step that behaves
+  // differently from one host to the next, so it is the step worth proving. It
+  // buys nothing, and its answer decides how much of a month gets billed.
+  try {
+    const probe = await captionsFromYouTube('dQw4w9WgXcQ');
+    out.freeCaptions = `working — ${probe.segments.length} cues (${probe.captionLang}) pulled from the probe video for nothing, so videos YouTube allows will not spend a credit`;
+  } catch (err) {
+    out.freeCaptions = `refused by YouTube: ${redact(err.message)}. Normal for a server address; it only means every new video spends a credit.`;
+  }
+  return json(200, out);
+}
+
 /* ---------------------------------------------------------------- handler */
 
 export default async (request) => {
   const url = new URL(request.url);
   const debug = url.searchParams.get('debug') === '1';
+  if (url.searchParams.get('selftest') === '1') return selftest();
+
   const id = videoId(url.searchParams.get('url') || '');
 
   if (!id) {
@@ -371,77 +518,74 @@ export default async (request) => {
     if (hit) return json(200, { ...hit, cached: true });
   }
 
-  const { used, allowed, month } = await quota();
-  if (!allowed) {
-    return json(429, {
-      error: 'This month is spent',
-      hint: `${used} new transcripts already this month, and the cap is ${MONTHLY_CAP}. Videos read before still open instantly. The count resets on the 1st.`,
-    });
-  }
-
   const tried = [];
   let core = null;
   let meta = {};
   let billed = 0;
+  let failure = null;
+  let certain = false;
+  let month = thisMonth();
 
-  if (SUPADATA_KEY) {
-    // Metadata first, because it decides which caption language to ask for.
-    // The Google key is free, so it saves a credit whenever it is configured.
+  // Free metadata, whatever else happens. Nothing below has to buy a title.
+  try {
+    meta = await metaFromYouTube(id);
+  } catch (err) {
+    tried.push(`youtube meta: ${err.message}`);
     if (YT_KEY) meta = await fromDataApi(id);
-
-    if (!meta.title) {
-      try {
-        const video = await supadataVideo(id);
-        billed += video.billed;
-        meta = { ...video, ...Object.fromEntries(Object.entries(meta).filter(([, v]) => v)) };
-      } catch (err) {
-        tried.push(`supadata video: ${err.message}`);
-      }
-    }
     if (!meta.title) meta = { ...meta, ...(await fromOembed(id)) };
-
-    try {
-      core = await fromSupadata(id, preferLang(meta.language, meta.langs));
-      billed += core.billed;
-    } catch (err) {
-      tried.push(`supadata: ${err.message}`);
-    }
   }
 
-  // Free long shot, only when there is no provider to ask.
-  if (!core && !SUPADATA_KEY) {
+  // Free captions. Usually refused, and free to be refused.
+  try {
+    core = await captionsFromYouTube(id);
+  } catch (err) {
+    tried.push(`youtube captions: ${err.message}`);
+    certain = !!err.certain;
+    failure = err;
+  }
+
+  // Only now can this request cost anything, so only now does the cap apply. A
+  // month at its cap still reads every video the free paths above can reach.
+  if (!core && !certain && SUPADATA_KEY) {
+    const spent = await quota();
+    month = spent.month || month;
+    if (!spent.allowed) {
+      return json(429, {
+        error: 'This month is spent',
+        hint: `${spent.used} new transcripts already this month, and the cap is ${MONTHLY_CAP}. Videos read before still open instantly, and so does anything YouTube hands over for free. The count resets on the 1st.`,
+      });
+    }
+
+    const want = preferLang(meta.language);
     try {
-      core = await fromYouTube(id);
+      core = await fromSupadata(id, want);
+      billed += core.billed;
+      failure = null;
     } catch (err) {
-      tried.push(`youtube: ${err.message}`);
+      tried.push(`supadata (${want}): ${err.message}`);
+      failure = err;
+      // The pinned language is a guess whenever the metadata came back thin, and
+      // that guess falls through to English. Ask again without it rather than
+      // tell someone their Czech video has no captions. A refused call is not a
+      // billed call, so the retry costs a credit only if it is the one that works.
+      if (want && !terminal(err)) {
+        try {
+          core = await fromSupadata(id, '');
+          billed += core.billed;
+          failure = null;
+        } catch (second) {
+          tried.push(`supadata (any language): ${second.message}`);
+          failure = second;
+        }
+      }
     }
   }
 
   for (let i = 0; i < billed; i++) await spend(month);
 
   if (!core) {
-    const missing = tried.some((t) => /not found|404|unavailable/i.test(t));
-    if (missing) {
-      return json(404, {
-        error: 'That video does not exist',
-        hint: 'It may be private, deleted, or the link may have a typo in it.',
-        ...(debug ? { tried } : {}),
-      });
-    }
-    return json(502, {
-      error: 'Could not get a transcript for that video',
-      hint: SUPADATA_KEY
-        ? 'The video has no captions in any language, so there is nothing to read.'
-        : 'No transcript provider is configured yet, and YouTube will not serve captions directly.',
-      ...(debug ? { tried } : {}),
-    });
-  }
-
-  // The free YouTube path carries its own metadata; anything still missing gets
-  // filled from the cheapest source that has it.
-  if (!core.title && !meta.title) {
-    meta = { ...meta, ...(await fromDataApi(id)) };
-    if (!meta.title) meta = { ...meta, ...(await fromOembed(id)) };
+    const [status, error, hint] = diagnose(failure, !!SUPADATA_KEY);
+    return json(status, { error, hint, ...(debug ? { tried } : {}) });
   }
 
   const duration = core.duration || meta.duration
@@ -458,6 +602,9 @@ export default async (request) => {
     words: core.segments.reduce((n, s) => n + s.text.split(/\s+/).length, 0),
     chapters: (core.chapters?.length ? core.chapters : meta.chapters) || [],
     segments: core.segments,
+    // What this copy cost to make. Cached alongside the transcript, so reopening
+    // a video keeps saying what it originally spent rather than claiming free.
+    cost: billed,
     cached: false,
     ...(debug ? { via: core.via, tried } : {}),
   };

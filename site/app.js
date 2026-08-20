@@ -142,8 +142,11 @@ function render(payload) {
   el.transcript.innerHTML = html.join('');
 
   // The stamp says where this copy came from, which is the one thing the header
-  // can tell you that nothing else does.
-  el.stamp.textContent = payload.cached ? 'From cache' : 'Freshly pulled';
+  // can tell you that nothing else does. Two of the three states are free, and
+  // which one it was is worth saying plainly.
+  el.stamp.textContent = payload.cached ? 'From cache'
+    : payload.cost ? `Freshly pulled, ${payload.cost} credit${payload.cost === 1 ? '' : 's'}`
+    : 'Freshly pulled, free';
   el.stamp.hidden = false;
 
   el.search.value = '';
