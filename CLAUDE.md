@@ -121,8 +121,9 @@ House devices, use these rather than inventing more:
 `@media print` is maintained on purpose. It is a printout, so it should print.
 
 **No subtitles under headings.** A number, a count or a state may sit under a title;
-a restatement may not. The header stamp shows `From cache` / `Freshly pulled`,
-which is state, not a tagline. It must never become one.
+a restatement may not. The header stamp shows `From cache`, `Freshly pulled, free`
+or `Freshly pulled, 1 credit`, which is state, and in the last two cases the only
+place the spend is ever visible. It must never become a tagline.
 
 **Gotcha:** author `display` beats the UA sheet's `[hidden]`, so `[hidden]
 {display:none!important}` is load-bearing. Without it the full-height flex sections

@@ -484,18 +484,15 @@ async function selftest() {
       out.cacheSaid = redact(err.message);
     }
   }
-  // The free path, against a video that certainly has captions. This is the
-  // quickest way to see whether YouTube is currently refusing this host's IP,
-  // which decides how much of the month gets billed. It buys nothing.
+  // The whole free path, end to end, against a video that certainly has captions.
+  // Not just the player call: the caption fetch is the step that behaves
+  // differently from one host to the next, so it is the step worth proving. It
+  // buys nothing, and its answer decides how much of a month gets billed.
   try {
-    const d = await innertube(CAPTION_CLIENT, 'dQw4w9WgXcQ');
-    const state = d.playabilityStatus?.status || '?';
-    const tracks = (d.captions?.playerCaptionsTracklistRenderer?.captionTracks || []).length;
-    out.freeCaptions = state === 'OK' && tracks
-      ? `YouTube answers this host — ${tracks} caption tracks on the probe video, so some videos will cost nothing`
-      : `YouTube refuses this host: ${state}${d.playabilityStatus?.reason ? ` — ${d.playabilityStatus.reason}` : ''}. Every new video will spend a credit.`;
+    const probe = await captionsFromYouTube('dQw4w9WgXcQ');
+    out.freeCaptions = `working — ${probe.segments.length} cues (${probe.captionLang}) pulled from the probe video for nothing, so videos YouTube allows will not spend a credit`;
   } catch (err) {
-    out.freeCaptions = `probe failed: ${redact(err.message)}`;
+    out.freeCaptions = `refused by YouTube: ${redact(err.message)}. Normal for a server address; it only means every new video spends a credit.`;
   }
   return json(200, out);
 }
@@ -605,6 +602,9 @@ export default async (request) => {
     words: core.segments.reduce((n, s) => n + s.text.split(/\s+/).length, 0),
     chapters: (core.chapters?.length ? core.chapters : meta.chapters) || [],
     segments: core.segments,
+    // What this copy cost to make. Cached alongside the transcript, so reopening
+    // a video keeps saying what it originally spent rather than claiming free.
+    cost: billed,
     cached: false,
     ...(debug ? { via: core.via, tried } : {}),
   };
