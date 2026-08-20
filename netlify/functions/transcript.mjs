@@ -29,6 +29,10 @@ const USAGE = 'watchless_usage';
 const CACHE_DAYS = 90;
 // Just under Supadata's 100/month free tier, so a busy month stops rather than bills.
 const MONTHLY_CAP = Number(process.env.MONTHLY_CAP || 90);
+// One request can spend two credits: metadata, then the transcript. The cap is
+// checked against the worst case, so it is a ceiling rather than a number to
+// step over on the last request of the month.
+const WORST_CASE = 2;
 
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
@@ -64,6 +68,27 @@ const json = (status, body) => new Response(JSON.stringify(body), {
   status,
   headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
 });
+
+/** Never let an upstream message echo a key back into the page. */
+function redact(text) {
+  let out = String(text);
+  for (const secret of [SUPADATA_KEY, SB_KEY, YT_KEY]) {
+    if (secret) out = out.split(secret).join('[redacted]');
+  }
+  return out;
+}
+
+/** An upstream failure that keeps its status code. The status is the whole
+ *  difference between "the key is wrong" and "the video has no captions", and
+ *  throwing a bare string threw that difference away. */
+function upstream(label, res, body) {
+  const err = new Error(redact(body.message || body.error || `${label} ${res.status}`));
+  err.status = res.status;
+  return err;
+}
+
+/** Auth and quota refusals will refuse the same way twice; nothing else will. */
+const terminal = (err) => [401, 402, 403, 429].includes(err?.status);
 
 async function get(url, extra = {}) {
   return fetch(url, {
@@ -179,7 +204,7 @@ async function supadataVideo(id) {
     headers: { 'x-api-key': SUPADATA_KEY },
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.message || body.error || `supadata video ${res.status}`);
+  if (!res.ok) throw upstream('supadata video', res, body);
   const duration = Number(body.duration || 0);
   return {
     title: body.title || '',
@@ -204,7 +229,7 @@ async function fromSupadata(id, want) {
     headers: { 'x-api-key': SUPADATA_KEY },
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.message || body.error || `supadata ${res.status}`);
+  if (!res.ok) throw upstream('supadata', res, body);
 
   const raw = body.content;
   if (!Array.isArray(raw) || !raw.length) throw new Error('supadata returned no cues');
@@ -250,7 +275,11 @@ function preferLang(metaLang, available) {
 
 /** Free, no key, no quota. Gives title, channel, thumbnail. */
 async function fromOembed(id) {
-  const res = await get(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${id}&format=json`);
+  // The inner URL has to be encoded. Unencoded, `?v=` and `&format=` bind to the
+  // oembed call instead, so it was asking about `/watch` with no video and being
+  // told 401 every time.
+  const target = encodeURIComponent(`https://www.youtube.com/watch?v=${id}`);
+  const res = await get(`https://www.youtube.com/oembed?url=${target}&format=json`);
   if (!res.ok) return {};
   const d = await res.json().catch(() => ({}));
   return { title: d.title || '', channel: d.author_name || '' };
@@ -310,7 +339,7 @@ async function quota() {
     });
     const rows = res.ok ? await res.json() : [];
     const used = rows[0]?.count || 0;
-    return { used, allowed: used < MONTHLY_CAP, month };
+    return { used, allowed: used + WORST_CASE <= MONTHLY_CAP, month };
   } catch {
     return { used: 0, allowed: true };
   }
@@ -352,11 +381,74 @@ async function cachePut(id, payload) {
   } catch { /* a cache miss is not worth failing the request over */ }
 }
 
+/* ----------------------------------------------------------- diagnostics */
+
+/** Name the real failure. The old answer to every provider error was "this video
+ *  has no captions", which sends you off to blame the video when the usual cause
+ *  is a key Netlify never got. */
+function diagnose(err, hasKey) {
+  if (!hasKey) {
+    return [502, 'No transcript provider is configured',
+      'SUPADATA_API_KEY is not set on this site, and YouTube will not serve captions directly. Add it in Netlify under Site configuration \u2192 Environment variables, then redeploy.'];
+  }
+  const status = err?.status || 0;
+  const said = err?.message || '';
+  if (status === 401 || status === 403) {
+    return [502, 'The transcript provider refused the key',
+      `Supadata answered ${status}, so SUPADATA_API_KEY is missing, mistyped, or expired. Check it in Netlify and redeploy after changing it. It said: ${said}`];
+  }
+  if (status === 402 || status === 429) {
+    return [502, 'The provider account is out of credits',
+      `Supadata answered ${status}. That is their limit, not the cap of ${MONTHLY_CAP} this site keeps. Their free tier resets monthly. It said: ${said}`];
+  }
+  // Order matters: a missing transcript also comes back as a 404, so read what it
+  // says before trusting the number, or every silent video becomes a dead link.
+  if (/transcript|caption|subtitle/i.test(said)) {
+    return [502, 'That video has no captions',
+      `Nobody published subtitles and YouTube made none automatically, so there is nothing to read. The provider said: ${said}`];
+  }
+  if (status === 404 || /not found|unavailable|private|does not exist/i.test(said)) {
+    return [404, 'That video does not exist',
+      'It may be private, deleted, region-locked, or the link may have a typo in it.'];
+  }
+  return [502, 'Could not get a transcript for that video',
+    said ? `The provider said: ${said}` : 'No source would answer. Add &debug=1 to the request to see what each one said.'];
+}
+
+/** What is configured and what answers, spending nothing. When the app reads
+ *  nothing at all, this says which of the three moving parts is missing without
+ *  anyone pasting links to find out. Booleans only, never a key. */
+async function selftest() {
+  const out = {
+    provider: SUPADATA_KEY ? 'SUPADATA_API_KEY is set' : 'SUPADATA_API_KEY is MISSING \u2014 nothing will load',
+    cache: SB_URL && SB_KEY ? 'Supabase is configured' : 'Supabase is MISSING \u2014 every read would cost a credit',
+    youtubeKey: YT_KEY ? 'YOUTUBE_API_KEY is set' : 'YOUTUBE_API_KEY is unset (optional: chapters and exact duration)',
+    monthlyCap: MONTHLY_CAP,
+  };
+  if (SB_URL && SB_KEY) {
+    try {
+      const res = await fetch(`${SB_URL}/rest/v1/${USAGE}?select=month,count&month=eq.${thisMonth()}`, {
+        headers: { apikey: SB_KEY, authorization: `Bearer ${SB_KEY}` },
+      });
+      out.cacheReachable = res.ok;
+      out.cacheStatus = res.status;
+      if (res.ok) out.spentThisMonth = (await res.json().catch(() => []))[0]?.count || 0;
+      else out.cacheSaid = redact((await res.text().catch(() => '')).slice(0, 200));
+    } catch (err) {
+      out.cacheReachable = false;
+      out.cacheSaid = redact(err.message);
+    }
+  }
+  return json(200, out);
+}
+
 /* ---------------------------------------------------------------- handler */
 
 export default async (request) => {
   const url = new URL(request.url);
   const debug = url.searchParams.get('debug') === '1';
+  if (url.searchParams.get('selftest') === '1') return selftest();
+
   const id = videoId(url.searchParams.get('url') || '');
 
   if (!id) {
@@ -383,6 +475,7 @@ export default async (request) => {
   let core = null;
   let meta = {};
   let billed = 0;
+  let failure = null;
 
   if (SUPADATA_KEY) {
     // Metadata first, because it decides which caption language to ask for.
@@ -400,16 +493,35 @@ export default async (request) => {
     }
     if (!meta.title) meta = { ...meta, ...(await fromOembed(id)) };
 
+    const want = preferLang(meta.language, meta.langs);
     try {
-      core = await fromSupadata(id, preferLang(meta.language, meta.langs));
+      core = await fromSupadata(id, want);
       billed += core.billed;
     } catch (err) {
-      tried.push(`supadata: ${err.message}`);
+      tried.push(`supadata (${want}): ${err.message}`);
+      failure = err;
+      // The pinned language is a guess whenever the metadata came back thin, and
+      // that guess falls through to English. Ask again without it rather than
+      // tell someone their Czech video has no captions. A refused call is not a
+      // billed call, so the retry costs a credit only if it is the one that works.
+      if (want && !terminal(err)) {
+        try {
+          core = await fromSupadata(id, '');
+          billed += core.billed;
+          failure = null;
+        } catch (second) {
+          tried.push(`supadata (any language): ${second.message}`);
+          failure = second;
+        }
+      }
     }
   }
 
-  // Free long shot, only when there is no provider to ask.
-  if (!core && !SUPADATA_KEY) {
+  // The free long shot. Still expected to fail, for the reasons at the top of
+  // this file, but it costs nothing and it is the only path left when the
+  // provider is the thing that broke. It used to run only when no key was set,
+  // so a rejected key meant no transcript even when this would have worked.
+  if (!core) {
     try {
       core = await fromYouTube(id);
     } catch (err) {
@@ -420,21 +532,8 @@ export default async (request) => {
   for (let i = 0; i < billed; i++) await spend(month);
 
   if (!core) {
-    const missing = tried.some((t) => /not found|404|unavailable/i.test(t));
-    if (missing) {
-      return json(404, {
-        error: 'That video does not exist',
-        hint: 'It may be private, deleted, or the link may have a typo in it.',
-        ...(debug ? { tried } : {}),
-      });
-    }
-    return json(502, {
-      error: 'Could not get a transcript for that video',
-      hint: SUPADATA_KEY
-        ? 'The video has no captions in any language, so there is nothing to read.'
-        : 'No transcript provider is configured yet, and YouTube will not serve captions directly.',
-      ...(debug ? { tried } : {}),
-    });
+    const [status, error, hint] = diagnose(failure, !!SUPADATA_KEY);
+    return json(status, { error, hint, ...(debug ? { tried } : {}) });
   }
 
   // The free YouTube path carries its own metadata; anything still missing gets

@@ -30,6 +30,18 @@ Measured 2026-08-03, from a home IP and from a server:
 
 So the caption fetch has to be bought from someone running residential proxies. That is what Supadata is for, and the free tier covers ordinary personal use.
 
+## When it will not read anything
+
+Open `/api/transcript?selftest=1` on the deployed site. It spends no credit and
+answers with which of the three moving parts is configured, whether Supabase
+answers, and how many transcripts this month has already cost. A missing
+`SUPADATA_API_KEY` is the usual answer, and the usual cause is that the variable
+was added in Netlify but the site was never redeployed afterwards.
+
+If the key is there and a link still fails, the error names the reason: a refused
+key, an exhausted provider account, a video that does not exist, or a video with
+no captions at all. Add `&debug=1` to the request to see what every source said.
+
 ## What it costs
 
 Nothing, until it gets busy. A video read once caches forever, so it costs one credit total no matter how many times it is opened afterwards. The function refuses to spend past `MONTHLY_CAP`, so the free tier cannot quietly become a bill. When the cap is hit, already-read videos still open instantly and the counter resets on the 1st.
