@@ -33,10 +33,15 @@
  * `?debug=1` reports which path won and what the others said.
  */
 
-const SUPADATA_KEY = process.env.SUPADATA_API_KEY || '';
-const YT_KEY = process.env.YOUTUBE_API_KEY || '';
-const SB_URL = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
-const SB_KEY = process.env.SUPABASE_SERVICE_KEY || '';
+// Trimmed on the way in. A key pasted into a dashboard field carries a trailing
+// space or newline often enough that the raw value is not worth trusting, and the
+// failure it causes -- "Incorrect API key provided" -- looks nothing like its cause.
+const env = (name) => (process.env[name] || '').trim();
+
+const SUPADATA_KEY = env('SUPADATA_API_KEY');
+const YT_KEY = env('YOUTUBE_API_KEY');
+const SB_URL = env('SUPABASE_URL').replace(/\/$/, '');
+const SB_KEY = env('SUPABASE_SERVICE_KEY');
 const TABLE = 'watchless_transcripts';
 const USAGE = 'watchless_usage';
 const CACHE_DAYS = 90;
@@ -57,14 +62,17 @@ const CAPTION_CLIENT = {
 };
 const META_CLIENT = { clientName: 'ANDROID_TESTSUITE', clientVersion: '1.9', androidSdkVersion: 30 };
 
-// The brief. Grok, because the key already exists for the dashboard. Unset, and
-// everything else still works — the panel simply does not appear.
-const XAI_KEY = process.env.XAI_API_KEY || process.env.GROK_API_KEY || '';
-const XAI_URL = 'https://api.x.ai/v1/chat/completions';
-const XAI_MODEL = process.env.SUMMARY_MODEL || 'grok-4';
+// The brief. Groq — the same account Mission Control talks to, so the key already
+// exists and is already proven. Not Grok: xAI is a different company with a name
+// one letter away, its own endpoint and keys that read `xai-` rather than `gsk_`.
+// Both variable names are accepted because the key was first added under the
+// wrong one, and a working deployment is worth more than a tidy name.
+const AI_KEY = env('GROQ_API_KEY') || env('XAI_API_KEY') || env('GROK_API_KEY');
+const AI_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const AI_MODEL = env('SUMMARY_MODEL') || 'llama-3.3-70b-versatile';
 // Its own ceiling, because it is its own bill. `?selftest=1` lists the model ids
-// this key can actually reach, which is the thing to check if summaries go quiet.
-const SUMMARY_CAP = Number(process.env.SUMMARY_CAP || MONTHLY_CAP);
+// this key can actually reach, which is the thing to check if briefs go quiet.
+const SUMMARY_CAP = Number(env('SUMMARY_CAP') || MONTHLY_CAP);
 
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
@@ -104,7 +112,7 @@ const json = (status, body) => new Response(JSON.stringify(body), {
 /** Never let an upstream message echo a key back into the page. */
 function redact(text) {
   let out = String(text);
-  for (const secret of [SUPADATA_KEY, SB_KEY, YT_KEY, XAI_KEY]) {
+  for (const secret of [SUPADATA_KEY, SB_KEY, YT_KEY, AI_KEY]) {
     if (secret) out = out.split(secret).join('[redacted]');
   }
   return out;
@@ -374,14 +382,27 @@ Write in the same language the transcript is in. Every takeaway must carry the a
 
 /** What the video is and what it says. Bought once per video: the result is
  *  cached inside the transcript payload, so reopening one never asks again. */
+/** A reasoning model writes its scratchpad into the answer, and when the budget
+ *  runs out mid-thought the block is never even closed, so the JSON is lost
+ *  inside it. Mission Control learned this the hard way; the same guard applies.
+ *  Unterminated blocks are cut BEFORE stray tags are stripped, or there is
+ *  nothing left to recognise them by. */
+function stripReasoning(raw) {
+  let s = String(raw).replace(/<think>[\s\S]*?<\/think>/gi, '');
+  const open = s.search(/<(think|thinking|reasoning)\b/i);
+  if (open !== -1) s = s.slice(0, open);
+  return s.replace(/<\/?(think|thinking|reasoning)>/gi, '').trim();
+}
+
 async function summarise(payload) {
-  const res = await fetch(XAI_URL, {
+  const send = (extra) => fetch(AI_URL, {
     method: 'POST',
-    headers: { authorization: `Bearer ${XAI_KEY}`, 'content-type': 'application/json' },
+    headers: { authorization: `Bearer ${AI_KEY}`, 'content-type': 'application/json' },
     body: JSON.stringify({
-      model: XAI_MODEL,
+      model: AI_MODEL,
       temperature: 0.2,
       response_format: { type: 'json_object' },
+      ...extra,
       messages: [
         { role: 'system', content: BRIEF },
         {
@@ -393,18 +414,23 @@ async function summarise(payload) {
     }),
   });
 
+  // Groq rejects unknown params on some models, so ask for the reasoning to be
+  // hidden first and drop the request to on a 400 rather than lose the call.
+  let res = await send({ reasoning_format: 'hidden', reasoning_effort: 'none' });
+  if (res.status === 400) res = await send({});
+
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    // xAI reports errors as a string on some paths and an object on others.
+    // Reported as a string on some paths and an object on others.
     const said = typeof body.error === 'string'
       ? body.error
-      : body.error?.message || body.message || `grok ${res.status}`;
+      : body.error?.message || body.message || `groq ${res.status}`;
     const err = new Error(redact(said));
     err.status = res.status;
     throw err;
   }
 
-  const raw = String(body.choices?.[0]?.message?.content || '');
+  const raw = stripReasoning(body.choices?.[0]?.message?.content || '');
   let parsed;
   try {
     parsed = JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g, ''));
@@ -419,7 +445,7 @@ async function summarise(payload) {
     .slice(0, 7);
   if (!about && !takeaways.length) throw new Error('brief came back empty');
 
-  return { about, takeaways, model: body.model || XAI_MODEL };
+  return { about, takeaways, model: body.model || AI_MODEL };
 }
 
 /* ----------------------------------------------------------------- cache */
@@ -569,18 +595,24 @@ async function selftest() {
   } catch (err) {
     out.freeCaptions = `refused by YouTube: ${redact(err.message)}. Normal for a server address; it only means every new video spends a credit.`;
   }
-  out.summary = XAI_KEY
-    ? `key set, asking for model "${XAI_MODEL}"`
-    : 'XAI_API_KEY is unset — no briefs, and everything else still works';
-  if (XAI_KEY) {
+  out.summary = AI_KEY
+    ? `key set, asking Groq for model "${AI_MODEL}"`
+    : 'GROQ_API_KEY is unset — no briefs, and everything else still works';
+  if (AI_KEY) {
+    // Shape only, never the key. A Groq key reads "gsk_"; anything starting
+    // "xai-" is an xAI key, which is a different company one letter away and
+    // will be refused here no matter how valid it is over there.
+    out.summaryKeyShape = AI_KEY.startsWith('gsk_')
+      ? `looks like a Groq key, ${AI_KEY.length} characters`
+      : `starts "${AI_KEY.slice(0, 4)}", ${AI_KEY.length} characters — Groq keys start "gsk_"`;
     try {
-      const res = await fetch('https://api.x.ai/v1/models', {
-        headers: { authorization: `Bearer ${XAI_KEY}` },
+      const res = await fetch('https://api.groq.com/openai/v1/models', {
+        headers: { authorization: `Bearer ${AI_KEY}` },
       });
       const body = await res.json().catch(() => ({}));
       out.summaryModels = res.ok
         ? (body.data || []).map((m) => m.id)
-        : `could not list models (${res.status}) — ${redact(JSON.stringify(body).slice(0, 120))}`;
+        : `could not list models (${res.status}) — ${redact(JSON.stringify(body).slice(0, 140))}`;
     } catch (err) {
       out.summaryModels = redact(err.message);
     }
@@ -703,7 +735,7 @@ export default async (request) => {
   // The brief is the last thing bought and the first thing read. It has its own
   // ceiling because it is its own bill, and it is cached with the transcript, so
   // a video is summarised once and never again.
-  if (XAI_KEY) {
+  if (AI_KEY) {
     const budget = await quota(`${thisMonth()}:summary`, SUMMARY_CAP);
     if (!budget.allowed) {
       tried.push(`summary: ${budget.used} already this month, cap ${SUMMARY_CAP}`);

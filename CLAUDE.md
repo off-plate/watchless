@@ -24,7 +24,10 @@ captions, then the monthly quota check, then Supadata for whatever is left. Keys
 live in Netlify environment variables.
 
 The brief — what the video is, and the takeaways — is the last thing bought and
-the first thing read. Grok writes it, reusing the key the dashboard already has.
+the first thing read. Groq writes it, on the key Mission Control already uses.
+Groq, not Grok: xAI is a different company whose name differs by one letter, and
+a `gsk_` key sent to `api.x.ai` is refused with "Incorrect API key provided",
+which reads like a broken key rather than the wrong address.
 It is cached inside the transcript payload, so a video is summarised once and
 never again, and it is optional in the strict sense: no key, no panel, everything
 else unchanged.
