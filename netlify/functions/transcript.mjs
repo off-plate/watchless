@@ -69,7 +69,10 @@ const META_CLIENT = { clientName: 'ANDROID_TESTSUITE', clientVersion: '1.9', and
 // wrong one, and a working deployment is worth more than a tidy name.
 const AI_KEY = env('GROQ_API_KEY') || env('XAI_API_KEY') || env('GROK_API_KEY');
 const AI_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const AI_MODEL = env('SUMMARY_MODEL') || 'llama-3.3-70b-versatile';
+// Groq retires model ids, and llama-3.3-70b-versatile — the one Mission Control
+// still asks for — is already gone. `?selftest=1` lists what the key can actually
+// reach, so a retirement is a one-variable fix rather than a hunt.
+const AI_MODEL = env('SUMMARY_MODEL') || 'openai/gpt-oss-120b';
 // Its own ceiling, because it is its own bill. `?selftest=1` lists the model ids
 // this key can actually reach, which is the thing to check if briefs go quiet.
 const SUMMARY_CAP = Number(env('SUMMARY_CAP') || MONTHLY_CAP);
@@ -414,9 +417,12 @@ async function summarise(payload) {
     }),
   });
 
-  // Groq rejects unknown params on some models, so ask for the reasoning to be
-  // hidden first and drop the request to on a 400 rather than lose the call.
+  // The general-purpose models here are reasoning models, which will spend the
+  // whole answer thinking out loud if allowed to. Ask for the reasoning to be
+  // hidden, then give ground one parameter at a time rather than lose the call:
+  // not every model accepts every knob, and a 400 is how it says which.
   let res = await send({ reasoning_format: 'hidden', reasoning_effort: 'none' });
+  if (res.status === 400) res = await send({ reasoning_format: 'hidden' });
   if (res.status === 400) res = await send({});
 
   const body = await res.json().catch(() => ({}));
