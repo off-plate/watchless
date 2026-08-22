@@ -751,6 +751,14 @@ export default async (request) => {
   }
 
   await cachePut(id, payload);
+
+  // `&slim=1` returns everything except the cues. The interesting fields — what
+  // a copy cost, what the brief says, what each source said — sit after the
+  // transcript in the JSON, which makes them unreadable on a phone.
+  if (url.searchParams.get('slim') === '1') {
+    const { segments, ...rest } = payload;
+    return json(200, { ...rest, segments: `${segments.length} cues, omitted` });
+  }
   return json(200, payload);
 };
 
