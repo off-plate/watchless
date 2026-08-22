@@ -540,7 +540,9 @@ async function selftest() {
   const out = {
     provider: SUPADATA_KEY ? 'SUPADATA_API_KEY is set' : 'SUPADATA_API_KEY is MISSING \u2014 nothing will load',
     cache: SB_URL && SB_KEY ? 'Supabase is configured' : 'Supabase is MISSING \u2014 every read would cost a credit',
-    youtubeKey: YT_KEY ? 'YOUTUBE_API_KEY is set' : 'YOUTUBE_API_KEY is unset (optional: chapters and exact duration)',
+    youtubeKey: YT_KEY
+      ? 'YOUTUBE_API_KEY is set, though nothing needs it any more'
+      : 'YOUTUBE_API_KEY is unset, which is correct \u2014 YouTube gives up chapters and duration for free now',
     monthlyCap: MONTHLY_CAP,
   };
   if (SB_URL && SB_KEY) {
