@@ -107,9 +107,45 @@ function videoId(input) {
   return null;
 }
 
+/* Mission Control reads transcripts through this endpoint too, from a page on
+ * off-plate.github.io, so the browser preflights before it will send anything.
+ * The allowlist is explicit rather than '*' because a request here can spend a
+ * credit: the cap protects the bill, and this protects the cap from being spent
+ * by pages that are not his.
+ *
+ * CORS is not access control -- curl ignores it -- so it is the quota, not this
+ * list, that is the real ceiling. This only stops a stranger's PAGE from
+ * spending his credits in his own visitors' browsers. */
+const ALLOWED_ORIGINS = new Set([
+  'https://off-plate.github.io',
+  'https://watchless.netlify.app',
+  'http://localhost:5173',
+  'http://localhost:4173',
+]);
+
+function corsHeaders(origin) {
+  const headers = { vary: 'Origin' };
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    headers['access-control-allow-origin'] = origin;
+    headers['access-control-allow-methods'] = 'GET, OPTIONS';
+    headers['access-control-allow-headers'] = 'content-type';
+    headers['access-control-max-age'] = '86400';
+  }
+  return headers;
+}
+
+/* Set for the length of one request. The handler below is the only caller of
+ * json(), and threading an origin through every one of its call sites would be
+ * a lot of noise for one header. */
+let requestOrigin = null;
+
 const json = (status, body) => new Response(JSON.stringify(body), {
   status,
-  headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+  headers: {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    ...corsHeaders(requestOrigin),
+  },
 });
 
 /** Never let an upstream message echo a key back into the page. */
@@ -629,6 +665,15 @@ async function selftest() {
 /* ---------------------------------------------------------------- handler */
 
 export default async (request) => {
+  requestOrigin = request.headers.get('origin');
+  /* The preflight is answered before anything is parsed: it carries no url
+     parameter, so letting it fall through returned "That is not a YouTube
+     link" with no CORS headers, and the browser reported it as a network
+     failure rather than a 400. */
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: corsHeaders(requestOrigin) });
+  }
+
   const url = new URL(request.url);
   const debug = url.searchParams.get('debug') === '1';
   if (url.searchParams.get('selftest') === '1') return selftest();
